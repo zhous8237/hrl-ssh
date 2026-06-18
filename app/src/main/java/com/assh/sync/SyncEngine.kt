@@ -3,9 +3,10 @@ package com.assh.sync
 import com.assh.sync.vault.VaultCodec
 import com.assh.sync.vault.VaultFormatException
 import com.assh.sync.vault.WrongPassphraseException
-import com.assh.sync.webdav.RemoteChangedException
-import com.assh.sync.webdav.WebDavClient
+import com.assh.sync.webdav.RemoteStore
+import com.assh.sync.webdav.RemoteStoreFactory
 import com.assh.sync.webdav.WebDavException
+import com.assh.sync.webdav.WebDavStoreFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -23,7 +24,8 @@ import kotlinx.coroutines.withContext
  */
 class SyncEngine(
     private val prefs: SyncPreferences,
-    private val repo: SyncRepository
+    private val repo: SyncRepository,
+    private val storeFactory: RemoteStoreFactory = WebDavStoreFactory()
 ) {
     companion object {
         private const val VAULT_NAME = "assh-vault.json.enc"
@@ -36,7 +38,7 @@ class SyncEngine(
             if (cfg.baseUrl.isBlank() || cfg.username.isBlank() || cfg.password.isBlank()) {
                 return@withContext SyncResult.Err("请先填写服务器地址、账号与密码")
             }
-            WebDavClient(cfg).testConnection()
+            storeFactory.create(cfg).testConnection()
             SyncResult.Ok(SyncMode.PUSH, SyncStats(), "连接成功")
         } catch (e: Exception) {
             SyncResult.Err(readableError(e))
@@ -48,7 +50,7 @@ class SyncEngine(
             val cfg = prefs.resolveConfig()
             if (!cfg.isUsable) return@withContext SyncResult.Err("请先填写并保存 WebDAV 端点与密码")
             if (passphrase.isEmpty()) return@withContext SyncResult.Err("请输入同步口令")
-            val dav = WebDavClient(cfg)
+            val dav = storeFactory.create(cfg)
             val deviceId = prefs.deviceId()
             when (mode) {
                 SyncMode.PUSH -> doPush(dav, deviceId, passphrase)
@@ -60,7 +62,7 @@ class SyncEngine(
         }
     }
 
-    private suspend fun doPush(dav: WebDavClient, deviceId: String, passphrase: CharArray): SyncResult {
+    private suspend fun doPush(dav: RemoteStore, deviceId: String, passphrase: CharArray): SyncResult {
         // 探测云端当前版本，使新版本号在多设备间单调递增（云端解不开则按 0 处理）。
         val remote = dav.download(VAULT_NAME)
         val remoteVersion = remote?.let {
@@ -69,13 +71,13 @@ class SyncEngine(
         val newVersion = maxOf(prefs.vaultVersion(), remoteVersion) + 1
         val dto = repo.exportToDto(newVersion, deviceId)
         val bytes = VaultCodec.encode(dto, passphrase)
-        // PUSH 语义即「本地为准、覆盖云端」，无条件上传（不用 If-Match，规避其误报 412）
-        val etag = dav.upload(VAULT_NAME, bytes, ifMatch = null)
+        // PUSH 语义即「本地为准、覆盖云端」，无条件上传
+        val etag = dav.upload(VAULT_NAME, bytes)
         prefs.saveSyncMeta(newVersion, etag)
         return SyncResult.Ok(SyncMode.PUSH, repo.localStats(), "已上传本地配置到云端")
     }
 
-    private suspend fun doPull(dav: WebDavClient, passphrase: CharArray): SyncResult {
+    private suspend fun doPull(dav: RemoteStore, passphrase: CharArray): SyncResult {
         val remote = dav.download(VAULT_NAME)
             ?: return SyncResult.Err("云端暂无备份，请先「同步到云端」")
         val dto = VaultCodec.decode(remote.first, passphrase)
@@ -84,7 +86,7 @@ class SyncEngine(
         return SyncResult.Ok(SyncMode.PULL, stats, "已从云端恢复到本地")
     }
 
-    private suspend fun doMerge(dav: WebDavClient, deviceId: String, passphrase: CharArray): SyncResult {
+    private suspend fun doMerge(dav: RemoteStore, deviceId: String, passphrase: CharArray): SyncResult {
         val remote = dav.download(VAULT_NAME)
             ?: return doPush(dav, deviceId, passphrase) // 云端为空：首次合并退化为推送
         val remoteDto = VaultCodec.decode(remote.first, passphrase)
@@ -93,8 +95,8 @@ class SyncEngine(
         val merged = repo.merge(localDto, remoteDto, newVersion, deviceId)
         val stats = repo.applyMirror(merged)
         val bytes = VaultCodec.encode(merged, passphrase)
-        // 合并结果已纳入云端最新状态，无条件写回（同 doPush，避免不可靠的 If-Match 误报 412）
-        val etag = dav.upload(VAULT_NAME, bytes, ifMatch = null)
+        // 合并结果已纳入云端最新状态，无条件写回（同 doPush）
+        val etag = dav.upload(VAULT_NAME, bytes)
         prefs.saveSyncMeta(newVersion, etag)
         return SyncResult.Ok(SyncMode.MERGE, stats, "合并完成")
     }
@@ -102,7 +104,6 @@ class SyncEngine(
     private fun readableError(e: Throwable): String = when (e) {
         is WrongPassphraseException -> e.message ?: "同步口令错误"
         is VaultFormatException -> e.message ?: "同步包格式错误"
-        is RemoteChangedException -> "云端已被其它设备更新，请改用「智能合并」或重试"
         is WebDavException -> e.message ?: "WebDAV 错误"
         else -> e.message ?: "同步失败：${e.javaClass.simpleName}"
     }

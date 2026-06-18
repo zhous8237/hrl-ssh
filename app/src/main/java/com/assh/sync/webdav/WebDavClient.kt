@@ -7,21 +7,19 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
-/** 远端同步包在本次会话期间被其它设备改写（ETag 不匹配，HTTP 412） */
-class RemoteChangedException : Exception("云端已被其它设备更新，请重试同步")
-
 /** WebDAV 请求失败（鉴权 / 路径 / 服务器错误等），message 含可读原因 */
 class WebDavException(val statusCode: Int, msg: String) : Exception(msg)
 
 /**
  * WebDAV 客户端（功能 7，开发文档 v2 §3）。自封装 OkHttp，只用到少数动词：
  * PROPFIND（探测）、GET（下载）、PUT（上传）、DELETE（重置）。
+ * 实现 [RemoteStore] seam（C4），生产路径由 [WebDavStoreFactory] 构造。
  *
  * 同步包直接放在 [WebDavConfig.baseUrl] 指向的目录下，不再创建子目录、也不再发
  * MKCOL —— 部分反向代理/网关不支持 MKCOL 会返回 502，直接 PUT 标准方法可规避。
  * 所有方法在 IO 线程执行（OkHttp 同步 execute），调用方需在协程 Dispatchers.IO 中调用。
  */
-class WebDavClient(private val cfg: WebDavConfig) {
+class WebDavClient(private val cfg: WebDavConfig) : RemoteStore {
 
     private val http = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -51,9 +49,8 @@ class WebDavClient(private val cfg: WebDavConfig) {
      *    部分网关对 PROPFIND 返回 405，但 OPTIONS 已确认是 WebDAV，故视为可达。
      * 失败抛 [WebDavException]，message 区分 401/404/5xx/SSL/非 WebDAV 等。
      */
-    fun testConnection() {
-        runCatching {
-            // 1) OPTIONS：确认这是 WebDAV 端点，而非被链路导偏的普通 Web 节点
+    override fun testConnection() {
+        runCatching {            // 1) OPTIONS：确认这是 WebDAV 端点，而非被链路导偏的普通 Web 节点
             val optReq = Request.Builder()
                 .url(dirUrl)
                 .method("OPTIONS", null)
@@ -93,7 +90,7 @@ class WebDavClient(private val cfg: WebDavConfig) {
     }
 
     /** 下载同步包；返回 (字节, ETag)，文件不存在返回 null */
-    fun download(name: String): Pair<ByteArray, String?>? {
+    override fun download(name: String): Pair<ByteArray, String?>? {
         val req = Request.Builder()
             .url(urlOf(name))
             .header("Authorization", auth())
@@ -114,31 +111,29 @@ class WebDavClient(private val cfg: WebDavConfig) {
     }
 
     /**
-     * 上传同步包。ifMatch 为上次已知 ETag 做乐观锁：远端已变更则服务器返回 412 →
-     * 抛 [RemoteChangedException]。ifMatch 为 null 则无条件覆盖。返回新 ETag。
+     * 无条件上传同步包并返回新 ETag。并发控制改用 vault 内部的 vaultVersion，
+     * 不再用 If-Match 乐观锁（实测多数服务端 ETag 弱比较恒不匹配，会每次误报 412）。
      */
-    fun upload(name: String, data: ByteArray, ifMatch: String?): String? {
+    override fun upload(name: String, data: ByteArray): String? {
         val builder = Request.Builder()
             .url(urlOf(name))
             .header("Authorization", auth())
             .put(data.toRequestBody("application/octet-stream".toMediaType()))
-        ifMatch?.let { builder.header("If-Match", it) }
         return runCatching {
             http.newCall(builder.build()).execute().use { resp ->
                 when {
-                    resp.code == 412 -> throw RemoteChangedException()
                     resp.isSuccessful -> resp.header("ETag")
                     else -> throw WebDavException(resp.code, httpMessage(resp.code, "上传失败"))
                 }
             }
         }.getOrElse { e ->
-            if (e is WebDavException || e is RemoteChangedException) throw e
+            if (e is WebDavException) throw e
             throw WebDavException(-1, mapNetworkError(e))
         }
     }
 
     /** 删除远端同步包（重置同步用） */
-    fun delete(name: String) {
+    override fun delete(name: String) {
         val req = Request.Builder()
             .url(urlOf(name))
             .header("Authorization", auth())
