@@ -1,13 +1,12 @@
 package com.assh.ai
 
-import com.assh.ai.llm.ToolSpec
-import kotlinx.serialization.json.add
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
-import kotlinx.serialization.json.putJsonArray
-import kotlinx.serialization.json.putJsonObject
+import com.assh.ai.tools.FetchUrlTool
+import com.assh.ai.tools.FinishTool
+import com.assh.ai.tools.RunCommandTool
+import com.assh.ai.tools.ToolRegistry
+import com.assh.ai.tools.WebSearchTool
 
-/** Agent 暴露给 LLM 的工具定义 + 系统提示 */
+/** Agent 暴露给 LLM 的工具注册表 + 系统提示。规格与行为现绑在各 [com.assh.ai.tools.Tool] 实现里。 */
 object AgentTools {
 
     const val RUN_COMMAND = "run_command"
@@ -15,79 +14,8 @@ object AgentTools {
     const val FETCH_URL = "fetch_url"
     const val FINISH = "finish"
 
-    private val runCommandSpec = ToolSpec(
-        name = RUN_COMMAND,
-        description = "在目标服务器上执行一条 shell 命令，返回 stdout、stderr 和退出码。",
-        parametersJsonSchema = buildJsonObject {
-            put("type", "object")
-            putJsonObject("properties") {
-                putJsonObject("command") {
-                    put("type", "string")
-                    put("description", "要执行的完整 shell 命令")
-                }
-                putJsonObject("why") {
-                    put("type", "string")
-                    put("description", "用一句中文说明这条命令的目的")
-                }
-                putJsonObject("timeout_sec") {
-                    put("type", "integer")
-                    put("description", "超时秒数，默认 120；编译 / 下载等长任务可设更大")
-                }
-            }
-            putJsonArray("required") { add("command") }
-        }
-    )
-
-    private val webSearchSpec = ToolSpec(
-        name = WEB_SEARCH,
-        description = "用关键词联网搜索，返回前几条结果的标题/链接/摘要。用于查找项目仓库、官方文档、报错解决办法、版本/依赖信息等；拿到链接后可用 fetch_url 读取详情。",
-        parametersJsonSchema = buildJsonObject {
-            put("type", "object")
-            putJsonObject("properties") {
-                putJsonObject("query") {
-                    put("type", "string")
-                    put("description", "搜索关键词")
-                }
-            }
-            putJsonArray("required") { add("query") }
-        }
-    )
-
-    private val fetchUrlSpec = ToolSpec(
-        name = FETCH_URL,
-        description = "抓取一个网页/文件 URL 的文本内容（如 GitHub 仓库 README、文档、release 页面），用于了解项目用途、依赖、资源/部署要求。返回去标签截断后的正文。",
-        parametersJsonSchema = buildJsonObject {
-            put("type", "object")
-            putJsonObject("properties") {
-                putJsonObject("url") {
-                    put("type", "string")
-                    put("description", "要读取的完整 URL（http/https）")
-                }
-            }
-            putJsonArray("required") { add("url") }
-        }
-    )
-
-    private val finishSpec = ToolSpec(
-        name = FINISH,
-        description = "任务完成、或确认无法继续时调用，向用户汇报最终结果。",
-        parametersJsonSchema = buildJsonObject {
-            put("type", "object")
-            putJsonObject("properties") {
-                putJsonObject("success") {
-                    put("type", "boolean")
-                    put("description", "是否成功达成目标")
-                }
-                putJsonObject("summary") {
-                    put("type", "string")
-                    put("description", "向用户汇报的中文总结：做了什么、结果如何、有无需要用户后续处理的事项")
-                }
-            }
-            putJsonArray("required") { add("success"); add("summary") }
-        }
-    )
-
-    val all: List<ToolSpec> = listOf(runCommandSpec, webSearchSpec, fetchUrlSpec, finishSpec)
+    /** 内置工具注册表：规格列表（给 LLM）与派发表（给循环）同源，加工具只改这一处 */
+    val registry = ToolRegistry(listOf(RunCommandTool(), WebSearchTool(), FetchUrlTool(), FinishTool()))
 
     fun systemPrompt(probe: String): String = """
         你是一个自动化运维助手，通过 $RUN_COMMAND 工具在远程 Linux 服务器上执行命令来完成用户交给你的目标。
