@@ -256,16 +256,10 @@ class TerminalViewModel(app: Application) : AndroidViewModel(app) {
     fun toggleCtrl() { _ui.value = _ui.value.copy(ctrlActive = !_ui.value.ctrlActive) }
     fun toggleAlt() { _ui.value = _ui.value.copy(altActive = !_ui.value.altActive) }
 
-    /** 粘滞组合：Ctrl+字母 → 控制字符（大写 ASCII - 64）；Alt → ESC 前缀 */
+    /** 粘滞组合：委托纯函数 [KeyEncoder]（C7，逻辑已抽出以便单测并与工具条 ^X 去重） */
     private fun applyStickyToChar(text: String): String {
-        var out = text
         val s = _ui.value
-        if (s.ctrlActive && text.length == 1) {
-            val c = text[0].uppercaseChar()
-            if (c in '@'..'_') out = (c.code - 64).toChar().toString()
-            else if (c == ' ') out = Char(0).toString()      // Ctrl+Space = NUL
-        }
-        if (s.altActive) out = Char(27).toString() + out     // Alt = ESC 前缀
+        val out = KeyEncoder.applySticky(text, s.ctrlActive, s.altActive)
         if (s.ctrlActive || s.altActive) {
             _ui.value = s.copy(ctrlActive = false, altActive = false)
         }

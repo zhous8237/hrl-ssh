@@ -701,10 +701,8 @@ private fun AccessoryBar(
                     perRow = 6,
                     accent = true
                 ) { label ->
-                    // ^X -> 对应控制字符（Ctrl 把字母映射到 1..26，^\ 为 0x1C）
-                    val ch = label[1]
-                    val code = ch.uppercaseChar().code and 0x1F
-                    onSendRaw(Char(code).toString())
+                    // ^X -> 对应控制字符，统一走 KeyEncoder（C7，与 VM sticky-key 同源）
+                    onSendRaw(KeyEncoder.ctrlLabel(label))
                 }
                 // 第四排：功能键 F1–F12，等宽换行平铺
                 KeyGrid(
