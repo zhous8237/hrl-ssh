@@ -106,38 +106,11 @@ class SyncRepository(
     // ===== 合并（LWW） =====
 
     /**
-     * 三方合并：按 uuid 取并集，冲突按 updatedAt 取较新者（Last-Write-Wins）。
-     * deleted 墓碑项视为「不存在」（前向兼容：未来版本的删除可经此传播）。
+     * 三方合并：委托给纯函数 [VaultMerger]（C3 深化，逻辑已抽出以便单测）。
+     * 保留此方法仅为兼容现有调用点。
      */
-    fun merge(local: VaultDto, remote: VaultDto, vaultVersion: Long, deviceId: String): VaultDto {
-        return VaultDto(
-            vaultVersion = vaultVersion,
-            exportedAt = System.currentTimeMillis(),
-            deviceId = deviceId,
-            hosts = mergeBy(local.hosts, remote.hosts, { it.uuid }, { it.updatedAt }, { it.deleted }),
-            keys = mergeBy(local.keys, remote.keys, { it.uuid }, { it.updatedAt }, { it.deleted }),
-            credentials = mergeBy(local.credentials, remote.credentials, { it.uuid }, { it.updatedAt }, { it.deleted }),
-            commands = mergeBy(local.commands, remote.commands, { it.uuid }, { it.updatedAt }, { it.deleted }),
-            aiProfiles = mergeBy(local.aiProfiles, remote.aiProfiles, { it.id }, { it.updatedAt }, { it.deleted }),
-            aiActiveProfileId = local.aiActiveProfileId ?: remote.aiActiveProfileId
-        )
-    }
-
-    private fun <T> mergeBy(
-        local: List<T>, remote: List<T>,
-        uuid: (T) -> String, updatedAt: (T) -> Long, deleted: (T) -> Boolean
-    ): List<T> {
-        val byUuid = LinkedHashMap<String, T>()
-        for (item in local) byUuid[uuid(item)] = item
-        for (item in remote) {
-            val existing = byUuid[uuid(item)]
-            if (existing == null || updatedAt(item) > updatedAt(existing)) {
-                byUuid[uuid(item)] = item
-            }
-        }
-        // 墓碑项不进入合并结果（applyMirror 会据此删除本地对应行）
-        return byUuid.values.filterNot { deleted(it) }
-    }
+    fun merge(local: VaultDto, remote: VaultDto, vaultVersion: Long, deviceId: String): VaultDto =
+        VaultMerger.merge(local, remote, vaultVersion, deviceId)
 
     // ===== 写回（镜像） =====
 

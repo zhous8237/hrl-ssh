@@ -62,7 +62,9 @@ abstract class AsshDatabase : RoomDatabase() {
                     AsshDatabase::class.java,
                     "assh.db"
                 ).addMigrations(MIGRATION_4_5)
-                    .fallbackToDestructiveMigration()
+                    // 不用 fallbackToDestructiveMigration()：本库存着用户唯一一份 SSH 私钥/密码，
+                    // 静默清库换不崩溃是不可接受的取舍。缺失迁移时宁可启动即抛 IllegalStateException
+                    // （明确暴露问题），也不能悄悄抹掉数据。改 schema 必须随版本号补 Migration。
                     .build().also { instance = it }
             }
     }
