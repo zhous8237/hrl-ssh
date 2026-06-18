@@ -117,11 +117,9 @@ class TerminalViewModel(app: Application) : AndroidViewModel(app) {
             // 意外断线（服务器关会话 / shell 退出 / 网络中断）也必须回收资源：
             // 移除僵尸 session、取消状态订阅，并在无活跃连接时停掉前台 Service。
             // 否则前台通知钉住进程，划掉 App 后进程仍不被系统回收（"关 App 后不恢复"）。
-            // configCache 由 cleanupDisconnected 故意保留，一键重连仍免密。
+            // configCache 由 Dropped 拆链故意保留，一键重连仍免密。
             manager.cleanupDisconnected(hostId)
-            if (manager.activeCount == 0) {
-                SshForegroundService.stop(getApplication())
-            }
+            stopServiceIfNoActiveConnections()
         },
         onCopyToClipboardHook = { copyRequest.value = it },
         onPasteFromClipboardHook = { /* UI 层工具条处理粘贴 */ }
@@ -278,6 +276,11 @@ class TerminalViewModel(app: Application) : AndroidViewModel(app) {
     fun disconnect() {
         registry.remove(hostId)?.finishIfRunning()
         manager.disconnect(hostId)
+        stopServiceIfNoActiveConnections()
+    }
+
+    /** 无活跃连接时停掉前台 Service（C5：原本在 disconnect 与意外断线回调里各写一份） */
+    private fun stopServiceIfNoActiveConnections() {
         if (manager.activeCount == 0) {
             SshForegroundService.stop(getApplication())
         }

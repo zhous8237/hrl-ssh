@@ -144,15 +144,32 @@ class SshConnectionManagerTest {
     }
 
     @Test
-    fun `failed connect surfaces error state`() = runTest {
+    fun `teardown UserInitiated closes by user and drops config`() = runTest {
         val scope = CoroutineScope(UnconfinedTestDispatcher(testScheduler))
-        val factory = RecordingFactory(failHosts = setOf(1))
+        val factory = RecordingFactory()
         val mgr = manager(factory, scope)
 
-        assertThrows(RuntimeException::class.java) {
-            kotlinx.coroutines.runBlocking { mgr.connect(cfg(1)) }
-        }
-        assertTrue(factory.created.first().state.value == ConnState.ERROR)
-        assertEquals("失败连接不计入活跃数", 0, mgr.activeCount)
+        mgr.connect(cfg(1))
+        val t = factory.created.first()
+        mgr.teardown(1, TeardownReason.UserInitiated)
+
+        assertEquals(1, t.closeCount)
+        assertEquals(true, t.lastCloseByUser)
+        assertNull(mgr.cachedConfig(1))
+    }
+
+    @Test
+    fun `teardown Dropped keeps config and does not re-close`() = runTest {
+        val scope = CoroutineScope(UnconfinedTestDispatcher(testScheduler))
+        val factory = RecordingFactory()
+        val mgr = manager(factory, scope)
+
+        mgr.connect(cfg(1))
+        val t = factory.created.first()
+        mgr.teardown(1, TeardownReason.Dropped)
+
+        assertEquals("Dropped 不应重复 close", 0, t.closeCount)
+        assertNotNull(mgr.cachedConfig(1))
+        assertNull(mgr.get(1))
     }
 }
