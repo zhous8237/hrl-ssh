@@ -21,11 +21,12 @@ enum class ConnState { IDLE, CONNECTING, CONNECTED, DISCONNECTED, ERROR }
 
 /**
  * 单个 SSH 连接（文档 §7.1）：持有一个 sshj SSHClient + 交互式 Shell（PTY）。
+ * 实现 [SshTransport] seam（C2），生产路径由 [SshjTransportFactory] 构造。
  */
 class SshSession(
-    val hostId: Long,
+    override val hostId: Long,
     private val knownHostDao: KnownHostDao
-) {
+) : SshTransport {
     private companion object { const val TAG = "assh-ssh" }
 
     /** 同时写 logcat 和文件日志（部分机型 IDE 抓不到 logcat） */
@@ -57,17 +58,17 @@ class SshSession(
     @Volatile
     private var closed = false
 
-    lateinit var stdout: InputStream
+    override lateinit var stdout: InputStream
         private set
-    lateinit var stdin: OutputStream
+    override lateinit var stdin: OutputStream
         private set
 
     private val _state = MutableStateFlow(ConnState.IDLE)
-    val state = _state.asStateFlow()
+    override val state = _state.asStateFlow()
 
     /** 错误信息，state == ERROR 时供 UI 展示 */
     @Volatile
-    var lastError: String? = null
+    override var lastError: String? = null
         private set
 
     /** 用户主动断开标记，区分意外断线（自动重连判据） */
@@ -79,7 +80,7 @@ class SshSession(
     @Volatile
     private var disconnectReason: String? = null
 
-    suspend fun connect(cfg: ResolvedHostConfig, cols: Int = 80, rows: Int = 24) =
+    override suspend fun connect(cfg: ResolvedHostConfig, cols: Int, rows: Int) =
         withContext(Dispatchers.IO) {
             _state.value = ConnState.CONNECTING
             try {
@@ -147,24 +148,7 @@ class SshSession(
         return c.loadKeys(pem, null, null)
     }
 
-    fun write(bytes: ByteArray) {
-        if (closed) return
-        try {
-            ioExecutor.execute {
-                try {
-                    stdin.write(bytes)
-                    stdin.flush()
-                } catch (e: Exception) {
-                    flog("write: failed - ${e.javaClass.name}: ${e.message}")
-                    markDisconnected()
-                }
-            }
-        } catch (e: java.util.concurrent.RejectedExecutionException) {
-            // 与 close() 竞态：池刚 shutdown。静默丢弃，连接已不在了。
-        }
-    }
-
-    fun resize(cols: Int, rows: Int) {
+    override fun resize(cols: Int, rows: Int) {
         if (closed) return
         // 防抖 120ms：键盘弹出动画/捏合缩放会连发十几次 resize，只有最终尺寸有意义。
         // 中间值逐条发到服务器会让远端 TUI（vim/htop）反复重排，表现为缩放“延时感”。
@@ -180,7 +164,7 @@ class SshSession(
     }
 
     /** 读线程 EOF / IOException 时调用 */
-    fun markDisconnected() {
+    override fun markDisconnected() {
         flog("markDisconnected: state=${_state.value} disconnectReason=$disconnectReason")
         if (_state.value == ConnState.CONNECTED) {
             // 优先用服务器返回的断开原因；否则给通用提示，避免“莫名断开”
@@ -193,7 +177,7 @@ class SshSession(
     }
 
     @Synchronized
-    fun close(byUser: Boolean = false) {
+    override fun close(byUser: Boolean) {
         if (byUser) userClosed = true
         // 幂等：close 可能被多次调用（EOF 路径 + UI 断开/重连路径），第二次直接返回，
         // 否则会向已 shutdown 的 ioExecutor 投递任务，抛 RejectedExecutionException
@@ -220,4 +204,11 @@ class SshSession(
         }
         ioExecutor.shutdown()   // 已入队任务会执行完；之后该会话不再收发
     }
+}
+
+/** 生产工厂：用真实 sshj 支撑的 [SshSession] 满足 [SshTransport] seam */
+class SshjTransportFactory(
+    private val knownHostDao: KnownHostDao
+) : SshTransportFactory {
+    override fun create(hostId: Long): SshTransport = SshSession(hostId, knownHostDao)
 }

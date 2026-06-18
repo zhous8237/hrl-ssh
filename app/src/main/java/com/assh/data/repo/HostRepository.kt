@@ -1,6 +1,7 @@
 package com.assh.data.repo
 
 import com.assh.data.crypto.CryptoManager
+import com.assh.data.crypto.SealedSecret
 import com.assh.data.db.AsshDatabase
 import com.assh.data.db.entity.AuthType
 import com.assh.data.db.entity.HostEntity
@@ -67,19 +68,21 @@ class HostRepository(private val db: AsshDatabase) {
 
         when (host.authType) {
             AuthType.PASSWORD -> {
-                // 优先用独立密码库引用（功能 4）；否则回退到内联 encPassword
+                // 优先用独立密码库引用（功能 4）；否则回退到内联 encPassword。
+                // 经 SealedSecret 收口解密（C6）：sshj 的 authPassword(String) 强制 String 边界，
+                // 故用 decryptToString 逃生口；明文随 ResolvedHostConfig 瞬时存在，连后即弃。
                 password = when {
                     host.credentialId != null ->
                         db.credentialDao().findById(host.credentialId)
-                            ?.let { CryptoManager.decryptString(it.encPassword) }
-                    else -> host.encPassword?.let { CryptoManager.decryptString(it) }
+                            ?.let { SealedSecret(it.encPassword).decryptToString() }
+                    else -> host.encPassword?.let { SealedSecret(it).decryptToString() }
                 }
             }
             AuthType.KEY -> {
                 val keyId = host.keyId ?: throw IllegalStateException("私钥认证但未选择私钥")
                 val key = db.keyDao().findById(keyId)
                     ?: throw IllegalStateException("私钥不存在: $keyId")
-                privateKeyPem = CryptoManager.decryptString(key.encPrivateKey)
+                privateKeyPem = SealedSecret(key.encPrivateKey).decryptToString()
             }
         }
 

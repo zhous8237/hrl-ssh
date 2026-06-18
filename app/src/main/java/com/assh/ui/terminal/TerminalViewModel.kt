@@ -109,7 +109,7 @@ class TerminalViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** 构建绑定到当前 VM 的会话回调；新建与复用 TerminalSession 都必须经此绑定 */
-    private fun makeSessionClient(ssh: com.assh.ssh.SshSession) = AsshTerminalSessionClient(
+    private fun makeSessionClient(ssh: com.assh.ssh.SshTransport) = AsshTerminalSessionClient(
         onTextChangedHook = { onScreenUpdated?.invoke() },
         onSessionFinishedHook = {
             ssh.markDisconnected()
@@ -117,11 +117,9 @@ class TerminalViewModel(app: Application) : AndroidViewModel(app) {
             // 意外断线（服务器关会话 / shell 退出 / 网络中断）也必须回收资源：
             // 移除僵尸 session、取消状态订阅，并在无活跃连接时停掉前台 Service。
             // 否则前台通知钉住进程，划掉 App 后进程仍不被系统回收（"关 App 后不恢复"）。
-            // configCache 由 cleanupDisconnected 故意保留，一键重连仍免密。
+            // configCache 由 Dropped 拆链故意保留，一键重连仍免密。
             manager.cleanupDisconnected(hostId)
-            if (manager.activeCount == 0) {
-                SshForegroundService.stop(getApplication())
-            }
+            stopServiceIfNoActiveConnections()
         },
         onCopyToClipboardHook = { copyRequest.value = it },
         onPasteFromClipboardHook = { /* UI 层工具条处理粘贴 */ }
@@ -256,16 +254,10 @@ class TerminalViewModel(app: Application) : AndroidViewModel(app) {
     fun toggleCtrl() { _ui.value = _ui.value.copy(ctrlActive = !_ui.value.ctrlActive) }
     fun toggleAlt() { _ui.value = _ui.value.copy(altActive = !_ui.value.altActive) }
 
-    /** 粘滞组合：Ctrl+字母 → 控制字符（大写 ASCII - 64）；Alt → ESC 前缀 */
+    /** 粘滞组合：委托纯函数 [KeyEncoder]（C7，逻辑已抽出以便单测并与工具条 ^X 去重） */
     private fun applyStickyToChar(text: String): String {
-        var out = text
         val s = _ui.value
-        if (s.ctrlActive && text.length == 1) {
-            val c = text[0].uppercaseChar()
-            if (c in '@'..'_') out = (c.code - 64).toChar().toString()
-            else if (c == ' ') out = Char(0).toString()      // Ctrl+Space = NUL
-        }
-        if (s.altActive) out = Char(27).toString() + out     // Alt = ESC 前缀
+        val out = KeyEncoder.applySticky(text, s.ctrlActive, s.altActive)
         if (s.ctrlActive || s.altActive) {
             _ui.value = s.copy(ctrlActive = false, altActive = false)
         }
@@ -284,6 +276,11 @@ class TerminalViewModel(app: Application) : AndroidViewModel(app) {
     fun disconnect() {
         registry.remove(hostId)?.finishIfRunning()
         manager.disconnect(hostId)
+        stopServiceIfNoActiveConnections()
+    }
+
+    /** 无活跃连接时停掉前台 Service（C5：原本在 disconnect 与意外断线回调里各写一份） */
+    private fun stopServiceIfNoActiveConnections() {
         if (manager.activeCount == 0) {
             SshForegroundService.stop(getApplication())
         }

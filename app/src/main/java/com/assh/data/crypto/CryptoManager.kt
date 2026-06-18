@@ -21,7 +21,7 @@ import javax.crypto.spec.GCMParameterSpec
  * - 密文格式：[1B version][12B IV][ciphertext+tag]，整体作为 BLOB 存 Room。
  * - 原则：密文常驻，明文瞬时 —— 只在即将建立连接时解密，用完即弃。
  */
-object CryptoManager {
+object CryptoManager : SecretCodec {
     private const val KEY_ALIAS = "assh_master_key"
     private const val ANDROID_KS = "AndroidKeyStore"
     private const val TRANSFORM = "AES/GCM/NoPadding"
@@ -75,7 +75,7 @@ object CryptoManager {
             .put(BLOB_VERSION).put(iv).put(ct).array()
     }
 
-    fun decrypt(blob: ByteArray): ByteArray {
+    override fun decrypt(blob: ByteArray): ByteArray {
         val buf = ByteBuffer.wrap(blob)
         buf.get()                                // version，预留
         val iv = ByteArray(GCM_IV_LEN).also { buf.get(it) }
@@ -85,7 +85,7 @@ object CryptoManager {
         return cipher.doFinal(ct)
     }
 
-    fun encryptString(plain: String): ByteArray = encrypt(plain.toByteArray(Charsets.UTF_8))
+    override fun encryptString(plain: String): ByteArray = encrypt(plain.toByteArray(Charsets.UTF_8))
 
     fun decryptString(blob: ByteArray): String = String(decrypt(blob), Charsets.UTF_8)
 }

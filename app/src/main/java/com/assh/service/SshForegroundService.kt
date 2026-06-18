@@ -12,10 +12,13 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
+import androidx.lifecycle.lifecycleScope
 import com.assh.AsshApp
 import com.assh.R
 import com.assh.ssh.SshConnectionManager
 import com.assh.ui.MainActivity
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.launch
 
 /**
  * 前台 Service（文档 §10）：持有活跃 SSH 会话，挂持久通知防止进程被回收。
@@ -53,6 +56,17 @@ class SshForegroundService : LifecycleService() {
     override fun onCreate() {
         super.onCreate()
         createChannel()
+
+        // C8：连接数变化时实时刷新通知文案。此前 updateNotification() 无人调用，
+        // 计数永久停留在 startForeground 时的快照（连第 2 台/断 1 台都不更新）。
+        // 改由 manager.states 流驱动：drop(1) 跳过初始值（startForeground 已用它建过一次）。
+        val manager = (application as AsshApp).connectionManager
+        lifecycleScope.launch {
+            manager.states.drop(1).collect {
+                val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+                nm.notify(NOTI_ID, buildNotification())
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -101,12 +115,6 @@ class SshForegroundService : LifecycleService() {
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
         super.onTaskRemoved(rootIntent)
-    }
-
-    /** 连接数变化时由外部调用刷新通知 */
-    fun updateNotification() {
-        val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-        nm.notify(NOTI_ID, buildNotification())
     }
 
     private fun buildNotification(): Notification {

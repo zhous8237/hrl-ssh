@@ -17,6 +17,9 @@ slf4jAndroid = "1.7.36"
 annotation = "1.9.1"
 okhttp = "4.12.0"
 kotlinxSerialization = "1.7.3"
+junit = "4.13.2"
+mockk = "1.13.13"
+coroutinesTest = "1.9.0"
 
 [libraries]
 core-ktx               = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -44,6 +47,9 @@ datastore-prefs        = { group = "androidx.datastore", name = "datastore-prefe
 androidx-annotation    = { group = "androidx.annotation", name = "annotation", version.ref = "annotation" }
 okhttp                 = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
+junit                  = { group = "junit", name = "junit", version.ref = "junit" }
+mockk                  = { group = "io.mockk", name = "mockk", version.ref = "mockk" }
+coroutines-test        = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutinesTest" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
