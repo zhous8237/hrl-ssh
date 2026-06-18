@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'  # 触发条件：推送 v 开头的 tag，如 v1.0.0
 
+permissions:
+  contents: write  # 创建 Release / 上传 APK 需要写权限
+
 jobs:
   build:
     runs-on: ubuntu-latest
