@@ -1,9 +1,10 @@
 # a-ssh
 
-Android SSH 客户端 — Jetpack Compose + sshj + Termux 终端组件。
+Android SSH 客户端 — Jetpack Compose + sshj + Termux 终端组件 + AI Agent 自主运维。
 
-## 功能（v1）
+## 核心功能
 
+### SSH 连接与终端
 1. 服务器连接配置管理（增删改查、克隆）
 2. 密码 / 私钥两种认证方式
 3. 私钥别名管理（导入、复制公钥、删除保护）
@@ -12,6 +13,18 @@ Android SSH 客户端 — Jetpack Compose + sshj + Termux 终端组件。
 6. 前台 Service 保活、断线检测、一键重连
 7. Host Key TOFU 校验与变更警告（MITM 防护）
 8. 凭据 Android Keystore 硬件级加密（StrongBox / TEE，AES-256-GCM）
+
+### AI Agent 自主运维
+9. 集成 Claude / OpenAI 等 LLM，Agent 自主执行 SSH 命令
+10. Function Calling 工具链：exec_command、read_file、write_file、search_web、fetch_url
+11. 危险命令检测（rm -rf、dd、mkfs 等）与用户确认
+12. 会话历史记录与重放（JSON 格式存储）
+13. 多 LLM 配置切换（API Key、模型、System Prompt）
+
+### 数据同步
+14. WebDAV 双向同步：主机配置、私钥、命令历史
+15. 端到端加密（AES-256-GCM + Argon2id 密钥派生）
+16. 冲突检测与合并策略（本地优先 / 远程优先 / 手动）
 
 ## 构建
 
@@ -35,7 +48,12 @@ JAVA_HOME="<jbr-path>" ./gradlew :app:assembleDebug
 因此整个项目以 **GPLv3** 发布，详见 [LICENSE](LICENSE)。
 发布的 APK 对应版本的完整源码可从本仓库获取。
 
-## 文档
+## 技术栈
 
-- [开发文档 v1](docs/开发文档-v1.md) — 架构与功能 1–6
-- [视觉设计方案](docs/a-ssh%20视觉设计方案.md) — Cyber-Minimalism 设计语言
+- **UI**: Jetpack Compose + Material3 + Navigation
+- **SSH**: sshj (会话管理 + 认证 + 端口转发)
+- **终端**: Termux terminal-emulator/view (修改版，移除 JNI pty)
+- **数据库**: Room + SQLite (主机、私钥、命令历史)
+- **加密**: Android Keystore + AES-256-GCM
+- **AI**: Anthropic Claude API / OpenAI API (Retrofit + SSE)
+- **同步**: OkHttp + WebDAV + Argon2id
