@@ -19,15 +19,23 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * 后台保活（功能 6）：App 退到后台不立即断开，由 ProcessLifecycle 调用
  * onAppBackgrounded / onAppForegrounded 控制一个 10 分钟延时断开计时器。
+ *
+ * C2 seam：会话经 [SshTransportFactory] 创建（生产为 sshj，测试为内存 fake），
+ * [scope] 可注入以便测试用 TestScope 驱动状态聚合。
  */
-class SshConnectionManager(private val knownHostDao: KnownHostDao) {
+class SshConnectionManager(
+    private val transportFactory: SshTransportFactory,
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+) {
 
-    private val sessions = ConcurrentHashMap<Long, SshSession>()
+    /** 便利构造：生产路径用 sshj 工厂 */
+    constructor(knownHostDao: KnownHostDao) : this(SshjTransportFactory(knownHostDao))
+
+    private val sessions = ConcurrentHashMap<Long, SshTransport>()
 
     /** 重连用的配置缓存（含明文凭据，进程级内存，不落盘） */
     private val configCache = ConcurrentHashMap<Long, ResolvedHostConfig>()
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var backgroundTimerJob: Job? = null
 
     /** 各主机连接状态聚合流（主机列表实时刷新用）。无连接的主机不在 map 中，视为 IDLE。 */
@@ -46,7 +54,7 @@ class SshConnectionManager(private val knownHostDao: KnownHostDao) {
     }
 
     /** 订阅 session 的状态流，实时同步到聚合 map */
-    private fun watch(hostId: Long, session: SshSession) {
+    private fun watch(hostId: Long, session: SshTransport) {
         watchJobs.remove(hostId)?.cancel()
         watchJobs[hostId] = scope.launch {
             session.state.collect { publishState(hostId, it) }
@@ -69,16 +77,16 @@ class SshConnectionManager(private val knownHostDao: KnownHostDao) {
         backgroundTimerJob = null
     }
 
-    fun get(hostId: Long): SshSession? = sessions[hostId]
+    fun get(hostId: Long): SshTransport? = sessions[hostId]
 
     fun cachedConfig(hostId: Long): ResolvedHostConfig? = configCache[hostId]
 
     val activeCount: Int
         get() = sessions.values.count { it.state.value == ConnState.CONNECTED }
 
-    suspend fun connect(cfg: ResolvedHostConfig): SshSession {
+    suspend fun connect(cfg: ResolvedHostConfig): SshTransport {
         sessions[cfg.hostId]?.takeIf { it.state.value == ConnState.CONNECTED }?.let { return it }
-        val s = SshSession(cfg.hostId, knownHostDao)
+        val s = transportFactory.create(cfg.hostId)
         sessions[cfg.hostId] = s
         watch(cfg.hostId, s)
         s.connect(cfg)
@@ -87,7 +95,7 @@ class SshConnectionManager(private val knownHostDao: KnownHostDao) {
     }
 
     /** 一键重连（功能 6）：复用缓存配置 */
-    suspend fun reconnect(hostId: Long): SshSession {
+    suspend fun reconnect(hostId: Long): SshTransport {
         val cfg = configCache[hostId]
             ?: throw IllegalStateException("无缓存配置，无法重连")
         sessions[hostId]?.close()

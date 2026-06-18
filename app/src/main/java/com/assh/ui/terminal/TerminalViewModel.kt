@@ -109,7 +109,7 @@ class TerminalViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** 构建绑定到当前 VM 的会话回调；新建与复用 TerminalSession 都必须经此绑定 */
-    private fun makeSessionClient(ssh: com.assh.ssh.SshSession) = AsshTerminalSessionClient(
+    private fun makeSessionClient(ssh: com.assh.ssh.SshTransport) = AsshTerminalSessionClient(
         onTextChangedHook = { onScreenUpdated?.invoke() },
         onSessionFinishedHook = {
             ssh.markDisconnected()
