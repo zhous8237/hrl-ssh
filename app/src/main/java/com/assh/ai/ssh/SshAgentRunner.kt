@@ -1,31 +1,41 @@
 package com.assh.ai.ssh
 
 import com.assh.data.db.dao.KnownHostDao
-import com.assh.data.db.entity.AuthType
-import com.assh.ssh.AsshHostKeyVerifier
 import com.assh.ssh.ResolvedHostConfig
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
-import net.schmizz.keepalive.KeepAliveProvider
-import net.schmizz.keepalive.KeepAliveRunner
-import net.schmizz.sshj.DefaultConfig
-import net.schmizz.sshj.SSHClient
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.InputStream
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
+/** 异常 cause 链（限深防环）是否含 [java.util.concurrent.TimeoutException]——sshj 真超时的标志（区别于断线）。 */
+internal fun hasTimeoutCause(e: Throwable): Boolean =
+    generateSequence<Throwable>(e) { it.cause }.take(16)
+        .any { it is java.util.concurrent.TimeoutException }
+
 /**
- * AI Agent 专用的 SSH 执行器：独立 [SSHClient]，只用**非交互 exec channel**
+ * AI Agent 专用的 SSH 执行器：独立连接，只用**非交互 exec channel**
  * （`session.exec(cmd)`）。相比交互式 PTY shell（[com.assh.ssh.SshSession]），
  * exec 的 stdout/stderr 分离、有干净退出码，AI 能可靠判断命令成败。
  *
- * 独立连接 → 不干扰用户正在用的终端会话。复用 [AsshHostKeyVerifier] 走同一 known_hosts 校验。
+ * 独立连接 → 不干扰用户正在用的终端会话。建连/认证经 [AgentSshClientFactory]（默认
+ * [SshjAgentClientFactory] 复用同一 known_hosts 校验），便于退避重连逻辑脱离真服务器单测。
  * 所有方法在 IO 线程执行，调用方应在协程中调用。
  */
-class SshAgentRunner(private val knownHostDao: KnownHostDao) {
+class SshAgentRunner(
+    knownHostDao: KnownHostDao,
+    private val factory: AgentSshClientFactory = SshjAgentClientFactory(knownHostDao),
+    private val backoff: Backoff = Backoff(),
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
+) {
 
     @Volatile
-    private var client: SSHClient? = null
+    private var client: AgentSshClient? = null
 
     /** 最近一次连接配置：连接被判死时据此透明重连（AI 对话期间不应让用户看到"连接已断开"） */
     @Volatile
@@ -33,54 +43,91 @@ class SshAgentRunner(private val knownHostDao: KnownHostDao) {
 
     val isConnected: Boolean get() = client?.isConnected == true
 
-    suspend fun connect(cfg: ResolvedHostConfig) = withContext(Dispatchers.IO) {
+    suspend fun connect(cfg: ResolvedHostConfig) {
         lastCfg = cfg
-        // keepAlive 必须开：AI 每步之间要调 LLM（可能几十秒、含退避重试），其间 SSH 连接空闲，
-        // 不发心跳会被服务器/NAT 断开，下一条命令就报 not connected / 卡死在读流。
-        val config = DefaultConfig().apply { keepAliveProvider = KeepAliveProvider.KEEP_ALIVE }
-        val c = SSHClient(config)
-        c.addHostKeyVerifier(AsshHostKeyVerifier(knownHostDao))
-        c.connectTimeout = 15_000
-        c.timeout = 0
-        c.connect(cfg.host, cfg.port)
-        c.connection.keepAlive.keepAliveInterval = 20
-        // 默认 maxAliveCount=5：5×20s=100s 没收到心跳回包就自杀式断开。抓 GitHub 页 + 喂大段内容
-        // 给慢/被限流模型的间隙很容易超过它。调高到 30（≈600s）避免长间隙被自身 keepalive 误杀。
-        (c.connection.keepAlive as? KeepAliveRunner)?.maxAliveCount = 30
-        when (cfg.authType) {
-            AuthType.PASSWORD ->
-                c.authPassword(cfg.username, cfg.password ?: throw IllegalStateException("密码未提供"))
-            AuthType.KEY ->
-                c.authPublickey(cfg.username, c.loadKeys(cfg.privateKeyPem ?: throw IllegalStateException("私钥未提供"), null, null))
-        }
-        client = c
+        client = factory.connect(cfg)
     }
 
-    /** 连接已断则用 [lastCfg] 透明重连；已连接直接返回。无重连信息则抛出。 */
-    suspend fun ensureConnected() = withContext(Dispatchers.IO) {
-        if (isConnected) return@withContext
-        val cfg = lastCfg ?: throw IllegalStateException("SSH 连接已断开，且无可用的重连信息")
+    /**
+     * 连接已断则退避重连，最多耗 [budgetMs]；成功 true。
+     * 致命错（认证/密钥/算法/指纹，见 [SshErrorClassifier]）立即抛出、不耗预算；
+     * 可重连错（传输/网络）按 [backoff] 指数退避+抖动重试直到预算耗尽返回 false。
+     * 退避期间 `delay` 可被任务取消打断（[CancellationException] 透传，供「继续」抢占）。
+     */
+    private suspend fun reconnectWithBackoff(budgetMs: Long): Boolean = withContext(ioDispatcher) {
+        val cfg = lastCfg ?: throw SshReconnectFailedException("无可用的重连信息")
+        // withTimeoutOrNull 走协程 delay 计时（受测试虚拟时钟支配，便于单测）；预算内未连上
+        // 返回 null→false；致命错（非超时取消）照常向外抛、不耗尽预算。
+        val ok = withTimeoutOrNull(budgetMs) {
+            var attempt = 0
+            var connected = false
+            while (!connected) {
+                ensureActive()
+                runCatching { client?.disconnect() }
+                client = null
+                connected = try {
+                    client = factory.connect(cfg); true
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    if (SshErrorClassifier.classify(e) == SshErrorKind.FATAL) throw e
+                    false
+                }
+                if (!connected) delay(backoff.delayMs(attempt++))
+            }
+            true
+        }
+        ok ?: false
+    }
+
+    /** 连接已断则退避重连（[RECONNECT_BUDGET_MS] 预算）；连着直接返回；重连失败抛 [SshReconnectFailedException]。 */
+    suspend fun ensureConnected() {
+        if (isConnected) return
+        if (!reconnectWithBackoff(RECONNECT_BUDGET_MS)) throw SshReconnectFailedException()
+    }
+
+    /**
+     * 后台慢重试用：尝试**一次**重连（无内部退避循环，由调用方按 ~20–30s 间隔驱动）。
+     * 成功 true；瞬时失败 false；致命错（认证/密钥/指纹）抛出，交调用方转硬失败。
+     */
+    suspend fun tryReconnect(): Boolean = withContext(ioDispatcher) {
+        if (isConnected) return@withContext true
+        val cfg = lastCfg ?: return@withContext false
         runCatching { client?.disconnect() }
         client = null
-        connect(cfg)
+        try {
+            client = factory.connect(cfg); true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (SshErrorClassifier.classify(e) == SshErrorKind.FATAL) throw e
+            false
+        }
     }
 
     /**
      * 执行一条命令并返回结果。stdout/stderr 并发读以防管道写满死锁；
      * 超过 [maxOutputBytes] 截断（仍继续 drain 丢弃，避免阻塞服务器）；
      * [timeoutSec] 内未结束则打断并置 [ExecResult.timedOut]。
+     *
+     * 断线处理（区分于超时）：
+     * - **开始前断**：[ensureConnected] 退避重连；预算耗尽抛 [SshReconnectFailedException]（不返回假结果）。
+     * - **半途断**：置 [ExecResult.interrupted]，原地退避重连（成功置 [ExecResult.reconnected]），
+     *   **不重跑命令**——交模型据部分输出决定（杜绝改状态命令被重复执行）。
      */
     suspend fun runCommand(
         command: String,
         timeoutSec: Int = 120,
         maxOutputBytes: Int = 16 * 1024,
         onPartialStdout: ((String) -> Unit)? = null
-    ): ExecResult = withContext(Dispatchers.IO) {
-        ensureConnected()   // 连接被判死则透明重连，避免单步因空闲掉线而失败
-        val c = client?.takeIf { it.isConnected } ?: throw IllegalStateException("SSH 连接已断开")
+    ): ExecResult = withContext(ioDispatcher) {
+        ensureConnected()   // 开始前断→退避重连；预算耗尽抛 SshReconnectFailedException
+        val c = client?.takeIf { it.isConnected } ?: throw SshReconnectFailedException()
         val start = System.currentTimeMillis()
-        val session = c.startSession()
         var timedOut = false
+        var interrupted = false
+        var reconnected = false
+        val session = c.startSession()
         try {
             val cmd = session.exec(command)
             val out = StringBuilder()
@@ -93,17 +140,25 @@ class SshAgentRunner(private val knownHostDao: KnownHostDao) {
             try {
                 cmd.join(timeoutSec.toLong(), TimeUnit.SECONDS)
             } catch (e: Exception) {
-                timedOut = true   // join 超时（或连接中断）
+                // 区分真超时 vs 执行中断线：sshj 纯超时的 cause 链含 TimeoutException；
+                // 断线是 transport 死亡（deliverError），cause 链无 TimeoutException 且连接已掉。
+                if (hasTimeoutCause(e) && c.isConnected) timedOut = true else interrupted = true
             }
             tOut.join(2_000); tErr.join(2_000)
             val exit = runCatching { cmd.exitStatus }.getOrNull()
+            if (interrupted) {
+                // 半途断：原地退避重连（不重跑命令），成功则连接可继续，余下由模型决定
+                reconnected = runCatching { reconnectWithBackoff(RECONNECT_BUDGET_MS) }.getOrDefault(false)
+            }
             ExecResult(
                 stdout = out.toString().trimEnd(),
                 stderr = err.toString().trimEnd(),
                 exitStatus = exit,
                 truncated = outTrunc.get() || errTrunc.get(),
                 timedOut = timedOut,
-                durationMs = System.currentTimeMillis() - start
+                durationMs = System.currentTimeMillis() - start,
+                interrupted = interrupted,
+                reconnected = reconnected
             )
         } finally {
             runCatching { session.close() }
@@ -151,5 +206,10 @@ class SshAgentRunner(private val knownHostDao: KnownHostDao) {
         } catch (_: Exception) {
             // 流被关闭（超时打断 / 连接断开）→ 正常收尾
         }
+    }
+
+    companion object {
+        /** 命令开始前断线 / 半途断线后，原地阻塞退避重连的预算（覆盖一次普通 reboot ≈30–90s） */
+        private const val RECONNECT_BUDGET_MS = 90_000L
     }
 }

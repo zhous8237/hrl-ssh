@@ -28,6 +28,19 @@ interface ToolContext {
      */
     suspend fun runShell(command: String, why: String?, timeoutSec: Int): ShellOutcome
 
+    /**
+     * 以服务器端 detached（setsid）方式启动长任务：危险检测+确认认的是 [innerCommand]
+     * （用户能懂的原始命令），实际执行 [wrappedCommand]（setsid 包装串，瞬时返回）。
+     * 时间线展示 [innerCommand]。供 start_job 使用。
+     */
+    suspend fun runDetachedJob(innerCommand: String, why: String?, wrappedCommand: String): ShellOutcome
+
+    /**
+     * 执行只读/内部命令（tail 日志、读哨兵、kill 等），**不弹确认、不进时间线**——
+     * 供 check_job / kill_job 轮询，避免 ALWAYS 确认策略下刷屏。
+     */
+    suspend fun runReadonly(command: String, timeoutSec: Int): ShellOutcome
+
     /** 抓取 URL 文本（已做 SSRF 防护，结果由调用方按不可信数据包裹） */
     suspend fun fetchUrl(url: String): String
 

@@ -32,6 +32,8 @@ internal fun formatForLlm(res: ExecResult): String = buildString {
     append(" (耗时 ").append(res.durationMs).append("ms)")
     if (res.timedOut) append(" [超时被打断]")
     if (res.truncated) append(" [输出已截断]")
+    if (res.interrupted) append(" [执行中连接断开，命令可能未完成、无退出码]")
+    if (res.reconnected) append(" [连接已自动恢复，请据下方部分输出判断是否需要重做，或改用 start_job 后台执行]")
     append('\n')
     append("--- stdout ---\n").append(res.stdout.ifBlank { "(空)" }).append('\n')
     append("--- stderr ---\n").append(res.stderr.ifBlank { "(空)" })
