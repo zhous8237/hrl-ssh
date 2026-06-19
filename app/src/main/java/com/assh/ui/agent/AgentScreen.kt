@@ -153,6 +153,7 @@ fun AgentScreen(
             when {
                 !hasConfig -> InfoBar("尚未配置可用模型，点右上角设置添加并选中一个配置", AmberWarning)
                 st.running -> InfoBar("● 会话进行中 · ${activeProfile?.name?.ifBlank { activeProfile.model } ?: ""}", GreenSuccess)
+                st.disconnected -> InfoBar("● 连接已断开，正在后台重连…（点下方「立即重连」可手动触发）", AmberWarning)
                 else -> ModelSelectorBar(profiles, activeProfile, onSelect = { vm.setActiveProfile(it) })
             }
 
@@ -191,6 +192,7 @@ fun AgentScreen(
             // 底部固定输入/控制区
             BottomControl(
                 phase = st.phase,
+                disconnected = st.disconnected,
                 goal = goal, onGoalChange = { goal = it },
                 followup = followup, onFollowupChange = { followup = it },
                 hasConfig = hasConfig,
@@ -257,6 +259,7 @@ private fun ModelSelectorBar(
 @Composable
 private fun BottomControl(
     phase: AgentPhase,
+    disconnected: Boolean,
     goal: String, onGoalChange: (String) -> Unit,
     followup: String, onFollowupChange: (String) -> Unit,
     hasConfig: Boolean,
@@ -294,7 +297,7 @@ private fun BottomControl(
                             onClick = onContinue,
                             colors = ButtonDefaults.buttonColors(containerColor = BlueAccent),
                             modifier = Modifier.weight(1f)
-                        ) { Text("继续") }
+                        ) { Text(if (disconnected) "立即重连" else "继续") }
                         OutlinedButton(onClick = onEnd, modifier = Modifier.weight(1f)) { Text("结束会话") }
                     }
                 }

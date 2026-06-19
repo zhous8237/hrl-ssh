@@ -10,6 +10,9 @@ import com.assh.ai.llm.Role
 import com.assh.ai.llm.StopReason
 import com.assh.ai.ssh.ExecResult
 import com.assh.ai.ssh.SshAgentRunner
+import com.assh.ai.ssh.SshErrorClassifier
+import com.assh.ai.ssh.SshErrorKind
+import com.assh.ai.ssh.SshReconnectFailedException
 import com.assh.ai.tools.ShellOutcome
 import com.assh.ai.tools.ToolContext
 import com.assh.ai.tools.ToolOutcome
@@ -30,6 +33,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlin.coroutines.coroutineContext
+import kotlin.random.Random
 
 /**
  * AI 运维 Agent 引擎：编排 tool-use 循环，支持**多轮继续对话**。**进程级单例**（挂 AsshApp），
@@ -67,21 +71,7 @@ class SshAgentEngine(
         override fun notice(text: String) = addItem(TimelineItem.Notice(text))
 
         override suspend fun runShell(command: String, why: String?, timeoutSec: Int): ShellOutcome {
-            val cls = DangerousCommandDetector.classify(command)
-            val needConfirm = when (agentPreferences.confirmPolicyValue()) {
-                ConfirmPolicy.ALWAYS -> true
-                ConfirmPolicy.DANGEROUS_ONLY -> cls.level == RiskLevel.DANGEROUS
-                ConfirmPolicy.NEVER -> false
-            }
-            if (needConfirm) {
-                _state.update { it.copy(phase = AgentPhase.WAITING_CONFIRM, pendingConfirm = PendingConfirm(command, why, cls)) }
-                val approved = awaitConfirm()
-                _state.update { it.copy(pendingConfirm = null) }
-                if (!approved) {
-                    addItem(TimelineItem.Notice("已拒绝执行：$command"))
-                    return ShellOutcome.Rejected
-                }
-            }
+            if (!confirmIfNeeded(command, why)) return ShellOutcome.Rejected
             setPhase(AgentPhase.EXECUTING, _state.value.step)
             addItem(TimelineItem.Command(command, why, CmdStatus.RUNNING))
             var lastPartialMs = 0L
@@ -94,6 +84,26 @@ class SshAgentEngine(
                 }
             }) ?: return ShellOutcome.ConnectionClosed
             updateLastRunningCommand(res)
+            // 半途断线且未能原地重连 → 抛出转入"已断开·重连中"可恢复态（不直接报错结束）；
+            // 若已重连（interrupted && reconnected）则照常 Done，把中断结果交模型决定是否重做。
+            if (res.interrupted && !res.reconnected) throw SshReconnectFailedException()
+            return ShellOutcome.Done(res)
+        }
+
+        override suspend fun runDetachedJob(innerCommand: String, why: String?, wrappedCommand: String): ShellOutcome {
+            if (!confirmIfNeeded(innerCommand, why)) return ShellOutcome.Rejected
+            // 时间线展示内层命令（用户能懂），实际执行 setsid 包装串；包装串后台化、瞬时返回
+            setPhase(AgentPhase.EXECUTING, _state.value.step)
+            addItem(TimelineItem.Command(innerCommand, why, CmdStatus.RUNNING))
+            val res = runner?.runCommand(wrappedCommand, timeoutSec = 30) ?: return ShellOutcome.ConnectionClosed
+            updateLastRunningCommand(res)
+            if (res.interrupted && !res.reconnected) throw SshReconnectFailedException()
+            return ShellOutcome.Done(res)
+        }
+
+        override suspend fun runReadonly(command: String, timeoutSec: Int): ShellOutcome {
+            val res = runner?.runCommand(command, timeoutSec) ?: return ShellOutcome.ConnectionClosed
+            if (res.interrupted && !res.reconnected) throw SshReconnectFailedException()
             return ShellOutcome.Done(res)
         }
 
@@ -106,6 +116,7 @@ class SshAgentEngine(
 
     private var job: Job? = null
     private var idleJob: Job? = null
+    private var reconnectJob: Job? = null
     private var confirmDeferred: CompletableDeferred<Boolean>? = null
     private var hostKeyDeferred: CompletableDeferred<Boolean>? = null
     @Volatile private var runner: SshAgentRunner? = null
@@ -139,16 +150,18 @@ class SshAgentEngine(
         job = scope.launch { setupAndRun(hostId, g) }
     }
 
-    /** 在当前会话上追加指令继续；text 为空则重新执行原任务 */
+    /** 在当前会话上追加指令继续；text 为空则重新执行原任务。断线态下即「立即重连」入口 */
     fun continueTask(text: String) {
         if (_state.value.phase != AgentPhase.AWAITING_FOLLOWUP) return
-        cancelIdleTimer()
         val t = text.trim().ifBlank { sessionTitle }
         if (t.isBlank()) return
+        cancelIdleTimer()
+        reconnectJob?.cancel(); reconnectJob = null   // 接管后台重连，避免双路并发
         setPhase(AgentPhase.THINKING)
         job = scope.launch {
-            // 连接若已断（长时间空闲/网络抖动）先透明重连，而非直接报错
-            if (!ensureRunnerConnected()) { fail("连接已断开且重连失败，请重新开始会话"); return@launch }
+            // 连接若已断（长时间空闲/网络抖动）先透明重连（含退避）；失败转回"已断开"态继续后台重连，而非报错
+            if (!ensureRunnerConnected()) { enterDisconnected("立即重连未成功"); return@launch }
+            _state.update { it.copy(disconnected = false) }   // 手动重连成功，清断线标志
             // 重新解析当前选中的模型配置——用户可在上方切换模型后再点「继续」（含模型报错后换模型重试）
             if (!refreshLlm()) return@launch
             // 连接与模型都就绪后再落消息，避免检查失败时留下悬空 / 重复的用户消息
@@ -200,6 +213,7 @@ class SshAgentEngine(
             val cfg = hostRepository.resolveForConnect(hostId)
             sessionHostLabel = cfg.label
             connectTrustingHostKey { r.connect(cfg) }
+            pruneOldJobLogs()
             systemPrompt = AgentTools.systemPrompt(r.systemProbe())
             addItem(TimelineItem.Notice("已重新连接 ${cfg.label}，可继续对话"))
             _state.update { it.copy(phase = AgentPhase.AWAITING_FOLLOWUP, finishedMessage = "已恢复会话，可追加指令继续") }
@@ -222,6 +236,7 @@ class SshAgentEngine(
     fun cancel() {
         confirmDeferred?.complete(false)
         job?.cancel()
+        reconnectJob?.cancel(); reconnectJob = null
         if (runner?.isConnected == true) {
             saveHistory("已停止")
             _state.update { it.copy(phase = AgentPhase.AWAITING_FOLLOWUP, pendingConfirm = null, finishedMessage = "已停止本轮，可追加指令或结束会话") }
@@ -237,6 +252,7 @@ class SshAgentEngine(
 
     private fun endSession(message: String) {
         cancelIdleTimer()
+        reconnectJob?.cancel(); reconnectJob = null
         job?.cancel()
         confirmDeferred?.complete(false)
         closeRunner(); stopKeepAlive(); saveHistory("已结束")
@@ -259,6 +275,7 @@ class SshAgentEngine(
             val cfg = hostRepository.resolveForConnect(hostId)
             sessionHostLabel = cfg.label
             connectTrustingHostKey { r.connect(cfg) }
+            pruneOldJobLogs()
             setPhase(AgentPhase.THINKING)
             systemPrompt = AgentTools.systemPrompt(r.systemProbe())
             messages.add(ChatMessage.user(goal))
@@ -266,7 +283,7 @@ class SshAgentEngine(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            handleTurnError(e)
+            fail(readableError(e))   // 初次建连/探测失败：直接失败（连不上就别进重连 limbo，首轮还没跑）
         }
     }
 
@@ -332,6 +349,25 @@ class SshAgentEngine(
         return try { d.await() } finally { confirmDeferred = null }
     }
 
+    /** 危险检测 + 按策略弹确认。返回 true=可执行，false=被用户拒绝（调用方应返回 Rejected）。 */
+    private suspend fun confirmIfNeeded(command: String, why: String?): Boolean {
+        val cls = DangerousCommandDetector.classify(command)
+        val needConfirm = when (agentPreferences.confirmPolicyValue()) {
+            ConfirmPolicy.ALWAYS -> true
+            ConfirmPolicy.DANGEROUS_ONLY -> cls.level == RiskLevel.DANGEROUS
+            ConfirmPolicy.NEVER -> false
+        }
+        if (!needConfirm) return true
+        _state.update { it.copy(phase = AgentPhase.WAITING_CONFIRM, pendingConfirm = PendingConfirm(command, why, cls)) }
+        val approved = awaitConfirm()
+        _state.update { it.copy(pendingConfirm = null) }
+        if (!approved) {
+            addItem(TimelineItem.Notice("已拒绝执行：$command"))
+            return false
+        }
+        return true
+    }
+
     /**
      * 执行建连动作；若因 host key 变更（TOFU 比对失败）抛 [HostKeyChangedException]，
      * 暂停等用户决策：同意则删旧指纹后重连（下次 verify 走首次信任路径记录新指纹），
@@ -391,6 +427,14 @@ class SshAgentEngine(
         runner = null
     }
 
+    /** 连接后清理 24h 前的旧后台任务日志（best-effort，不影响主流程、不污染探测输出） */
+    private fun pruneOldJobLogs() {
+        val r = runner ?: return
+        scope.launch {
+            runCatching { r.runCommand("find \$HOME/.assh/jobs -type f -mtime +1 -delete 2>/dev/null", timeoutSec = 15) }
+        }
+    }
+
     private fun saveHistory(phaseLabel: String) {
         if (sessionId.isBlank()) return
         val record = AgentRunRecord(
@@ -443,18 +487,29 @@ class SshAgentEngine(
 
     private fun fail(message: String) {
         cancelIdleTimer()
+        reconnectJob?.cancel(); reconnectJob = null
         addItem(TimelineItem.Notice("错误：$message"))
         closeRunner(); stopKeepAlive()
         _state.update { it.copy(phase = AgentPhase.ERROR, pendingConfirm = null, success = false, finishedMessage = message) }
         saveHistory("出错")
     }
 
-    /** 本轮出错的统一处理：模型错误 / SSH 仍在线 → 软失败保连接续命；确实断了才彻底结束 */
+    /**
+     * 本轮出错的统一处理：
+     * - 模型错误 [LlmException] → 软失败保连接续命（可换模型「继续」重试）。
+     * - 致命 SSH 错（认证/密钥/算法/host key 变更，见 [SshErrorClassifier]）→ [fail] 彻底停下，需用户处理。
+     * - 传输类断开且连接已掉（含 [SshReconnectFailedException]）→ [enterDisconnected] 后台重连，**不进 ERROR**。
+     * - 其余（连接还在的瞬时错）→ 软失败可续。
+     */
     private fun handleTurnError(e: Throwable) {
-        if (e is LlmException || runner?.isConnected == true) failSoft(readableError(e))
-        else fail(readableError(e))
+        when {
+            e is LlmException -> failSoft(readableError(e))
+            e is HostKeyChangedException -> fail(readableError(e))
+            SshErrorClassifier.classify(e) == SshErrorKind.FATAL -> fail(readableError(e))
+            runner?.isConnected != true -> enterDisconnected(readableError(e))
+            else -> failSoft(readableError(e))
+        }
     }
-
     /**
      * 软失败：**不关连接、不停保活**。模型报错 / 限流重试用尽时，保留 SSH 与对话上下文，
      * 转入"可追加"等待态——用户可在上方切换模型后点「继续」重试（问题 2），并启动闲置计时。
@@ -469,6 +524,61 @@ class SshAgentEngine(
             )
         }
         saveHistory("模型出错(可继续)")
+        startIdleTimer()
+    }
+
+    /**
+     * 进入"已断开·重连中"可恢复态（仿 [failSoft]，但额外起后台限时重连）：
+     * **不关连接、不停保活**，保留对话上下文；phase 仍为 AWAITING_FOLLOWUP（自动可「继续」）。
+     * 区别于 [fail]（进 ERROR、关连接），传输类断开走这里——再不会出现"会话不能继续"。
+     */
+    private fun enterDisconnected(message: String) {
+        reconcileDanglingToolCalls()
+        cancelIdleTimer()
+        addItem(TimelineItem.Notice("连接已断开（$message），正在后台重连，也可点「继续」立即重连。"))
+        _state.update {
+            it.copy(
+                phase = AgentPhase.AWAITING_FOLLOWUP, disconnected = true, pendingConfirm = null,
+                success = false, finishedMessage = "连接已断开，正在后台重连。可点「继续」立即重连。"
+            )
+        }
+        saveHistory("已断开(重连中)")
+        startReconnectJob(System.currentTimeMillis() + IDLE_TIMEOUT_MS)
+    }
+
+    /**
+     * 后台慢重连：每 ~20–30s（带抖动）试一次，连上即恢复；[deadlineAtMs]（掉线起 [IDLE_TIMEOUT_MS]）
+     * 仍未连上则按闲置释放。致命错（认证/密钥/指纹）转 [fail]。「继续」会取消本 job 自行接管。
+     */
+    private fun startReconnectJob(deadlineAtMs: Long) {
+        reconnectJob?.cancel()
+        reconnectJob = scope.launch {
+            try {
+                while (System.currentTimeMillis() < deadlineAtMs) {
+                    if (!_state.value.disconnected) return@launch   // 已被「继续」接管
+                    val ok = try {
+                        runner?.tryReconnect() == true
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
+                        fail(readableError(e)); return@launch       // 致命错：后台重试无意义
+                    }
+                    if (ok) { onBackgroundReconnected(); return@launch }
+                    delay(20_000L + Random.nextLong(0, 10_001))     // 20–30s 慢重试，带抖动
+                }
+                if (_state.value.disconnected) endSession("断线超过 10 分钟，已自动结束会话")
+            } catch (_: CancellationException) {
+                // 被「继续」/结束接管，正常退出
+            }
+        }
+    }
+
+    private fun onBackgroundReconnected() {
+        addItem(TimelineItem.Notice("已重连，可继续对话"))
+        _state.update {
+            it.copy(phase = AgentPhase.AWAITING_FOLLOWUP, disconnected = false, finishedMessage = "已重连，可继续对话")
+        }
+        saveHistory("已重连")
         startIdleTimer()
     }
 

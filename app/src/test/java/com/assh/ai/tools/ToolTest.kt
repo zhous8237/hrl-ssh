@@ -25,6 +25,8 @@ class ToolTest {
         override suspend fun runShell(command: String, why: String?, timeoutSec: Int): ShellOutcome {
             lastShell = Triple(command, why, timeoutSec); return shell
         }
+        override suspend fun runDetachedJob(innerCommand: String, why: String?, wrappedCommand: String): ShellOutcome = shell
+        override suspend fun runReadonly(command: String, timeoutSec: Int): ShellOutcome = shell
         override suspend fun fetchUrl(url: String) = fetchResult
         override suspend fun search(query: String) = searchResult
     }
