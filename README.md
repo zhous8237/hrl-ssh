@@ -2,6 +2,16 @@
 
 Android SSH 客户端 — Jetpack Compose + sshj + Termux 终端组件 + AI Agent 自主运维。
 
+## 3.0.0 更新
+
+- AI 单轮执行上限提高到 200 步，保留主动停止、追加指令和本轮结束后的 10 分钟闲置释放。
+- 历史详情提供回到顶部、到最底部按钮，支持超长末条输出。
+- 配置页支持确认清除服务器指纹；指纹变化时，AI 与终端均可前往配置处理。
+- 执行中的会话使用前台服务和限时续租的 CPU 唤醒锁；普通终端不再因退后台 10 分钟而被应用主动断开。
+- 新增“后台运行”配置页，可检查电池优化、通知权限与渠道状态，并进入系统设置。
+
+锁屏持续联网建议在系统中将本应用设为电池“不受限制”或允许后台活动。等待用户确认时不会自动执行命令；强制停止、断网和系统后台时限仍可能中断本机任务。Android 15 的 `dataSync` 前台服务共享系统后台时长预算，应用到限后会明确停止并提示手动恢复，不自动重放结果未知的命令。
+
 ## 核心功能
 
 ### SSH 连接与终端
@@ -31,7 +41,7 @@ Android SSH 客户端 — Jetpack Compose + sshj + Termux 终端组件 + AI Agen
 用 Android Studio 打开工程（Gradle JDK 选内置 JBR 17+），同步后直接运行。
 
 - compileSdk 35 / targetSdk 35 / minSdk 26
-- AGP 8.7.x + Kotlin 2.0.x + KSP + Room + Compose BOM
+- AGP 8.11.2 + Kotlin 2.0.21 + KSP + Room + Compose BOM
 
 命令行（需 JDK 17+）：
 

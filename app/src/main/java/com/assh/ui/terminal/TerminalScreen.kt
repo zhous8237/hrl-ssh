@@ -85,6 +85,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.assh.data.db.entity.CommandEntity
 import com.assh.ssh.ConnState
+import com.assh.ui.common.BackgroundExecutionHint
 import com.assh.ui.commands.CommandEditDialog
 import com.assh.ui.hosts.asshFieldColors
 import com.assh.ui.theme.AmberWarning
@@ -109,6 +110,7 @@ import kotlinx.coroutines.delay
 fun TerminalScreen(
     hostId: Long,
     onBack: () -> Unit,
+    onOpenConfig: () -> Unit,
     vm: TerminalViewModel = viewModel()
 ) {
     LaunchedEffect(hostId) { vm.init(hostId) }
@@ -184,6 +186,10 @@ fun TerminalScreen(
             onReconnect = { vm.reconnect() },
             onDisconnect = { showDisconnectConfirm = true }
         )
+
+        if (ui.connState == ConnState.CONNECTED || ui.connState == ConnState.CONNECTING) {
+            BackgroundExecutionHint(onOpenConfig)
+        }
 
         // —— 连接成功瞬时通知条（设计方案 §4.3）——
         AnimatedVisibility(
@@ -448,7 +454,10 @@ fun TerminalScreen(
                 ) { Text("信任新指纹并连接", color = Navy900) }
             },
             dismissButton = {
-                TextButton(onClick = { vm.dismissHostKeyDialog() }) { Text("取消", color = Slate400) }
+                Column {
+                    TextButton(onClick = { vm.dismissHostKeyDialog(); onOpenConfig() }) { Text("前往设置清除") }
+                    TextButton(onClick = { vm.dismissHostKeyDialog() }) { Text("取消", color = Slate400) }
+                }
             }
         )
     }

@@ -43,7 +43,8 @@ private enum class HomeTab(val label: String, val icon: ImageVector) {
 fun HomeScreen(
     onOpenTerminal: (Long) -> Unit,
     onEditHost: (Long) -> Unit,
-    onAddHost: () -> Unit
+    onAddHost: () -> Unit,
+    onOpenConfig: () -> Unit
 ) {
     var selected by rememberSaveable { mutableIntStateOf(0) }
 
@@ -76,7 +77,7 @@ fun HomeScreen(
                     onEditHost = onEditHost,
                     onAddHost = onAddHost
                 )
-                HomeTab.AGENT -> AgentTab()
+                HomeTab.AGENT -> AgentTab(onOpenConfig = onOpenConfig)
                 HomeTab.CONFIG -> ConfigScreen()
             }
         }

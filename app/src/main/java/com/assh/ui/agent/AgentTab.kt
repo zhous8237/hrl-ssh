@@ -15,12 +15,13 @@ private enum class AgentTabPage { MAIN, SETTINGS, HISTORY }
  * 三页共用同一个 [AgentViewModel]（即同一进程级引擎与配置/历史流）。
  */
 @Composable
-fun AgentTab(vm: AgentViewModel = viewModel()) {
+fun AgentTab(onOpenConfig: () -> Unit, vm: AgentViewModel = viewModel()) {
     var page by remember { mutableStateOf(AgentTabPage.MAIN) }
     when (page) {
         AgentTabPage.MAIN -> AgentScreen(
             onOpenSettings = { page = AgentTabPage.SETTINGS },
             onOpenHistory = { page = AgentTabPage.HISTORY },
+            onOpenConfig = onOpenConfig,
             vm = vm
         )
         AgentTabPage.SETTINGS -> {

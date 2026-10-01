@@ -4,6 +4,7 @@ import android.util.Log
 import com.assh.FileLog
 import com.assh.data.db.dao.KnownHostDao
 import com.assh.data.db.entity.AuthType
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -136,11 +137,13 @@ class SshSession(
                 _state.value = ConnState.CONNECTED
                 flog("connect: shell started, state=CONNECTED")
             } catch (e: Exception) {
-                lastError = e.message ?: e.javaClass.simpleName
-                _state.value = ConnState.ERROR
-                flog("connect: failed - ${e.javaClass.name}: ${e.message} " + e.stackTraceToString())
                 runCatching { client?.disconnect() }
-                throw e
+                if (e is CancellationException) throw e
+                val error = e.hostKeyChange() ?: e
+                lastError = error.message ?: error.javaClass.simpleName
+                _state.value = ConnState.ERROR
+                flog("连接失败：${error.javaClass.name}: ${error.message} " + error.stackTraceToString())
+                throw error
             }
         }
 

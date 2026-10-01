@@ -53,7 +53,9 @@ data class AgentState(
     val finishedMessage: String? = null,   // 非空触发一次 Toast，消费后清空
     val success: Boolean = false,
     /** 连接已断、正在后台重连：phase 仍为 AWAITING_FOLLOWUP（可点「继续」立即重连） */
-    val disconnected: Boolean = false
+    val disconnected: Boolean = false,
+    /** 实际后台重连任务是否仍在运行，用于 CPU 资源管理。 */
+    val reconnecting: Boolean = false
 ) {
     val running: Boolean
         get() = phase == AgentPhase.CONNECTING || phase == AgentPhase.THINKING ||

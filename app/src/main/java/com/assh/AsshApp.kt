@@ -1,9 +1,6 @@
 package com.assh
 
 import android.app.Application
-import androidx.lifecycle.DefaultLifecycleObserver
-import androidx.lifecycle.LifecycleOwner
-import androidx.lifecycle.ProcessLifecycleOwner
 import com.assh.ai.AgentHistoryStore
 import com.assh.ai.AgentPreferences
 import com.assh.ai.SshAgentEngine
@@ -14,6 +11,8 @@ import com.assh.data.repo.CommandRepository
 import com.assh.data.repo.CredentialRepository
 import com.assh.data.repo.HostRepository
 import com.assh.data.repo.KeyRepository
+import com.assh.service.ForegroundSession
+import com.assh.service.SshForegroundService
 import com.assh.ssh.SshConnectionManager
 import com.assh.sync.SyncEngine
 import com.assh.sync.SyncPreferences
@@ -32,6 +31,7 @@ class AsshApp : Application() {
     val commandRepository by lazy { CommandRepository(database) }
     val connectionManager by lazy { SshConnectionManager(database.knownHostDao()) }
     val terminalRegistry by lazy { TerminalSessionRegistry() }
+    val terminalForegroundSession by lazy { ForegroundSession { SshForegroundService.start(this, it) } }
     val themePreferences by lazy { ThemePreferences(this) }
 
     // 功能 7：WebDAV 同步
@@ -61,15 +61,5 @@ class AsshApp : Application() {
         // 确保 Keystore 主密钥存在
         CryptoManager.ensureKey(this)
 
-        // 后台保活（功能 6）：退到后台启动 10 分钟延时断开，回前台取消
-        ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
-            override fun onStart(owner: LifecycleOwner) {
-                connectionManager.onAppForegrounded()
-            }
-
-            override fun onStop(owner: LifecycleOwner) {
-                connectionManager.onAppBackgrounded()
-            }
-        })
     }
 }

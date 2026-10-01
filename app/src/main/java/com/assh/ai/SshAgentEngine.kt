@@ -19,7 +19,9 @@ import com.assh.ai.tools.ToolOutcome
 import com.assh.data.db.dao.KnownHostDao
 import com.assh.data.repo.HostRepository
 import com.assh.service.AgentForegroundService
+import com.assh.service.ForegroundSession
 import com.assh.ssh.HostKeyChangedException
+import com.assh.ssh.hostKeyChange
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -50,16 +52,18 @@ class SshAgentEngine(
     private val agentPreferences: AgentPreferences,
     private val llmClientFactory: LlmClientFactory,
     private val knownHostDao: KnownHostDao,
-    private val historyStore: AgentHistoryStore
+    private val historyStore: AgentHistoryStore,
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+    val foregroundSession: ForegroundSession = ForegroundSession { AgentForegroundService.start(appContext, it) },
+    private val runnerFactory: () -> SshAgentRunner = { SshAgentRunner(knownHostDao) }
 ) {
     companion object {
-        private const val MAX_STEPS_PER_TURN = 25
+        private const val MAX_STEPS_PER_TURN = 200
 
         /** 一轮结束后，闲置超过此时长（无追加指令）自动结束会话、释放 SSH 连接 */
         private const val IDLE_TIMEOUT_MS = 10 * 60 * 1000L
     }
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val webFetcher = WebFetcher()
     private val webSearcher = WebSearcher()
 
@@ -117,6 +121,8 @@ class SshAgentEngine(
     private var job: Job? = null
     private var idleJob: Job? = null
     private var reconnectJob: Job? = null
+    private var reconnectEpoch = 0L
+    private var foregroundGeneration = -1L
     private var confirmDeferred: CompletableDeferred<Boolean>? = null
     private var hostKeyDeferred: CompletableDeferred<Boolean>? = null
     @Volatile private var runner: SshAgentRunner? = null
@@ -146,8 +152,7 @@ class SshAgentEngine(
         sessionSuccess = false
         messages.clear()
         _state.value = AgentState(phase = AgentPhase.CONNECTING)
-        startKeepAlive()
-        job = scope.launch { setupAndRun(hostId, g) }
+        launchProtected { setupAndRun(hostId, g) }
     }
 
     /** 在当前会话上追加指令继续；text 为空则重新执行原任务。断线态下即「立即重连」入口 */
@@ -156,18 +161,22 @@ class SshAgentEngine(
         val t = text.trim().ifBlank { sessionTitle }
         if (t.isBlank()) return
         cancelIdleTimer()
-        reconnectJob?.cancel(); reconnectJob = null   // 接管后台重连，避免双路并发
+        cancelReconnect()   // 接管后台重连，避免双路并发
         setPhase(AgentPhase.THINKING)
-        job = scope.launch {
-            // 连接若已断（长时间空闲/网络抖动）先透明重连（含退避）；失败转回"已断开"态继续后台重连，而非报错
-            if (!ensureRunnerConnected()) { enterDisconnected("立即重连未成功"); return@launch }
-            _state.update { it.copy(disconnected = false) }   // 手动重连成功，清断线标志
-            // 重新解析当前选中的模型配置——用户可在上方切换模型后再点「继续」（含模型报错后换模型重试）
-            if (!refreshLlm()) return@launch
-            // 连接与模型都就绪后再落消息，避免检查失败时留下悬空 / 重复的用户消息
-            messages.add(ChatMessage.user(t))
-            addItem(TimelineItem.UserText(t))
-            runTurns()
+        launchProtected {
+            try {
+                if (!ensureRunnerConnected()) { enterDisconnected("立即重连未成功"); return@launchProtected }
+                _state.update { it.copy(disconnected = false) }
+                if (!refreshLlm()) return@launchProtected
+                // 连接与模型就绪后才追加消息，检查失败不留下重复指令。
+                messages.add(ChatMessage.user(t))
+                addItem(TimelineItem.UserText(t))
+                runTurns()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                handleTurnError(e)
+            }
         }
     }
 
@@ -198,8 +207,7 @@ class SshAgentEngine(
         messages.clear()
         messages.addAll(record.messages.map { it.toChatMessage() })
         _state.value = AgentState(phase = AgentPhase.CONNECTING, timeline = record.entries.map { it.toTimelineItem() })
-        startKeepAlive()
-        job = scope.launch { resumeConnect(record.hostId) }
+        launchProtected { resumeConnect(record.hostId) }
     }
 
     private suspend fun resumeConnect(hostId: Long) {
@@ -207,7 +215,8 @@ class SshAgentEngine(
         if (config == null) { fail("请先在「AI 助手」设置里添加并选中一个模型配置"); return }
         llmConfig = config
         llm = llmClientFactory.forConfig(config)
-        val r = SshAgentRunner(knownHostDao)
+        systemPrompt = AgentTools.systemPrompt("（尚未完成系统探测）")
+        val r = runnerFactory()
         runner = r
         try {
             val cfg = hostRepository.resolveForConnect(hostId)
@@ -221,7 +230,7 @@ class SshAgentEngine(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            fail(readableError(e))
+            if (e.hostKeyChange() != null) recoverHostKey(e) else fail(readableError(e))
         }
     }
 
@@ -232,11 +241,29 @@ class SshAgentEngine(
     fun trustHostKey() { hostKeyDeferred?.complete(true) }
     fun rejectHostKey() { hostKeyDeferred?.complete(false) }
 
+    /** 前往配置前取消等待与重连，保留时间线和上下文以便清理后继续。 */
+    fun prepareHostKeySettings() {
+        cancelIdleTimer()
+        job?.cancel()
+        cancelReconnect()
+        hostKeyDeferred?.cancel(); hostKeyDeferred = null
+        reconcileDanglingToolCalls()
+        _state.update {
+            it.copy(
+                phase = AgentPhase.AWAITING_FOLLOWUP, pendingHostKey = null,
+                disconnected = false, finishedMessage = "连接已暂停，请在设置中清除指纹后返回并点继续"
+            )
+        }
+        saveHistory("等待处理指纹")
+        startIdleTimer()
+    }
+
     /** 停止本轮 AI 处理，但保持连接（仍可继续）；连接已断则彻底结束 */
     fun cancel() {
         confirmDeferred?.complete(false)
+        hostKeyDeferred?.cancel()
         job?.cancel()
-        reconnectJob?.cancel(); reconnectJob = null
+        cancelReconnect()
         if (runner?.isConnected == true) {
             saveHistory("已停止")
             _state.update { it.copy(phase = AgentPhase.AWAITING_FOLLOWUP, pendingConfirm = null, finishedMessage = "已停止本轮，可追加指令或结束会话") }
@@ -252,7 +279,7 @@ class SshAgentEngine(
 
     private fun endSession(message: String) {
         cancelIdleTimer()
-        reconnectJob?.cancel(); reconnectJob = null
+        cancelReconnect()
         job?.cancel()
         confirmDeferred?.complete(false)
         closeRunner(); stopKeepAlive(); saveHistory("已结束")
@@ -269,7 +296,8 @@ class SshAgentEngine(
         if (goal.isBlank()) { fail("请先描述要完成的目标"); return }
         llmConfig = config
         llm = llmClientFactory.forConfig(config)
-        val r = SshAgentRunner(knownHostDao)
+        systemPrompt = AgentTools.systemPrompt("（尚未完成系统探测）")
+        val r = runnerFactory()
         runner = r
         try {
             val cfg = hostRepository.resolveForConnect(hostId)
@@ -283,7 +311,7 @@ class SshAgentEngine(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            fail(readableError(e))   // 初次建连/探测失败：直接失败（连不上就别进重连 limbo，首轮还没跑）
+            if (e.hostKeyChange() != null) recoverHostKey(e) else fail(readableError(e))
         }
     }
 
@@ -378,11 +406,14 @@ class SshAgentEngine(
             try {
                 connectAction()
                 return
-            } catch (e: HostKeyChangedException) {
-                val approved = awaitHostKeyConfirm(e)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val changed = e.hostKeyChange() ?: throw e
+                val approved = awaitHostKeyConfirm(changed)
                 if (!approved) throw IllegalStateException("已取消连接：未信任服务器的新指纹")
-                knownHostDao.delete(e.hostPort)
-                // 回到循环重连：旧指纹已删，verify 将以首次信任写入新指纹
+                knownHostDao.delete(changed.hostPort)
+                // 回到循环重连：旧指纹已删，校验器将记录新指纹。
             }
         }
     }
@@ -400,8 +431,10 @@ class SshAgentEngine(
         return try {
             d.await()
         } finally {
-            hostKeyDeferred = null
-            _state.update { it.copy(pendingHostKey = null) }
+            if (hostKeyDeferred === d) {
+                hostKeyDeferred = null
+                _state.update { it.copy(pendingHostKey = null) }
+            }
         }
     }
 
@@ -419,8 +452,47 @@ class SshAgentEngine(
         }
     }
 
-    private fun startKeepAlive() = runCatching { AgentForegroundService.start(appContext) }
-    private fun stopKeepAlive() = runCatching { AgentForegroundService.stop(appContext) }
+    private fun launchProtected(action: suspend () -> Unit) {
+        val lease = foregroundSession.request()
+        foregroundGeneration = lease.generation
+        job = scope.launch {
+            try {
+                lease.awaitReady()
+                coroutineContext.ensureActive()
+                action()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                fail(readableError(e))
+            } finally {
+                lease.close()
+            }
+        }
+        // 协程在首次调度前就被取消时，也必须归还准备阶段的租约。
+        job?.invokeOnCompletion { lease.close() }
+    }
+
+    private fun stopKeepAlive() = foregroundSession.stop(foregroundGeneration)
+
+    /** 系统收回后台执行能力时只停止本地编排，不声称远端命令已停止。 */
+    fun onBackgroundUnavailable(generation: Long, reason: String) {
+        if (generation != foregroundGeneration) return
+        cancelIdleTimer()
+        cancelReconnect()
+        job?.cancel()
+        confirmDeferred?.cancel()
+        hostKeyDeferred?.cancel()
+        reconcileDanglingToolCalls()
+        val closing = runner
+        runner = null
+        scope.launch { runCatching { closing?.close() } }
+        addItem(TimelineItem.Notice(reason))
+        _state.update {
+            it.copy(phase = AgentPhase.ERROR, pendingConfirm = null, pendingHostKey = null,
+                disconnected = false, reconnecting = false, success = false, finishedMessage = reason)
+        }
+        saveHistory("后台执行已停止")
+    }
 
     private fun closeRunner() {
         runCatching { runner?.close() }
@@ -487,7 +559,7 @@ class SshAgentEngine(
 
     private fun fail(message: String) {
         cancelIdleTimer()
-        reconnectJob?.cancel(); reconnectJob = null
+        cancelReconnect()
         addItem(TimelineItem.Notice("错误：$message"))
         closeRunner(); stopKeepAlive()
         _state.update { it.copy(phase = AgentPhase.ERROR, pendingConfirm = null, success = false, finishedMessage = message) }
@@ -501,15 +573,37 @@ class SshAgentEngine(
      * - 传输类断开且连接已掉（含 [SshReconnectFailedException]）→ [enterDisconnected] 后台重连，**不进 ERROR**。
      * - 其余（连接还在的瞬时错）→ 软失败可续。
      */
-    private fun handleTurnError(e: Throwable) {
+    private suspend fun handleTurnError(e: Throwable) {
         when {
+            e.hostKeyChange() != null -> recoverHostKey(e)
             e is LlmException -> failSoft(readableError(e))
-            e is HostKeyChangedException -> fail(readableError(e))
             SshErrorClassifier.classify(e) == SshErrorKind.FATAL -> fail(readableError(e))
             runner?.isConnected != true -> enterDisconnected(readableError(e))
             else -> failSoft(readableError(e))
         }
     }
+    /** 指纹错误暂停自动重试；信任后只恢复连接，不重放可能已执行的命令。 */
+    private suspend fun recoverHostKey(error: Throwable) {
+        cancelIdleTimer()
+        reconcileDanglingToolCalls()
+        var firstAttempt = true
+        try {
+            connectTrustingHostKey {
+                if (firstAttempt) {
+                    firstAttempt = false
+                    throw error
+                }
+                if (!ensureRunnerConnected()) throw SshReconnectFailedException()
+            }
+            onBackgroundReconnected()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (e is SshReconnectFailedException) enterDisconnected(readableError(e))
+            else fail(readableError(e))
+        }
+    }
+
     /**
      * 软失败：**不关连接、不停保活**。模型报错 / 限流重试用尽时，保留 SSH 与对话上下文，
      * 转入"可追加"等待态——用户可在上方切换模型后点「继续」重试（问题 2），并启动闲置计时。
@@ -550,9 +644,18 @@ class SshAgentEngine(
      * 后台慢重连：每 ~20–30s（带抖动）试一次，连上即恢复；[deadlineAtMs]（掉线起 [IDLE_TIMEOUT_MS]）
      * 仍未连上则按闲置释放。致命错（认证/密钥/指纹）转 [fail]。「继续」会取消本 job 自行接管。
      */
-    private fun startReconnectJob(deadlineAtMs: Long) {
+    private fun cancelReconnect() {
+        reconnectEpoch++
         reconnectJob?.cancel()
+        reconnectJob = null
+        _state.update { it.copy(reconnecting = false) }
+    }
+
+    private fun startReconnectJob(deadlineAtMs: Long) {
+        cancelReconnect()
+        val epoch = reconnectEpoch
         reconnectJob = scope.launch {
+            _state.update { it.copy(reconnecting = true) }
             try {
                 while (System.currentTimeMillis() < deadlineAtMs) {
                     if (!_state.value.disconnected) return@launch   // 已被「继续」接管
@@ -561,14 +664,17 @@ class SshAgentEngine(
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Throwable) {
-                        fail(readableError(e)); return@launch       // 致命错：后台重试无意义
+                        if (e.hostKeyChange() != null) recoverHostKey(e) else fail(readableError(e))
+                        return@launch
                     }
                     if (ok) { onBackgroundReconnected(); return@launch }
                     delay(20_000L + Random.nextLong(0, 10_001))     // 20–30s 慢重试，带抖动
                 }
                 if (_state.value.disconnected) endSession("断线超过 10 分钟，已自动结束会话")
             } catch (_: CancellationException) {
-                // 被「继续」/结束接管，正常退出
+                // 被继续或结束操作接管。
+            } finally {
+                if (epoch == reconnectEpoch) _state.update { it.copy(reconnecting = false) }
             }
         }
     }
@@ -615,7 +721,8 @@ class SshAgentEngine(
     private suspend fun ensureRunnerConnected(): Boolean {
         val r = runner ?: return false
         if (r.isConnected) return true
-        return runCatching { r.ensureConnected(); r.isConnected }.getOrDefault(false)
+        r.ensureConnected()
+        return r.isConnected
     }
 
     private fun readableError(e: Throwable): String = when (e) {

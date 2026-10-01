@@ -6,13 +6,15 @@ import androidx.lifecycle.viewModelScope
 import com.assh.AsshApp
 import com.assh.data.db.entity.CommandEntity
 import com.assh.data.db.entity.HostEntity
-import com.assh.service.SshForegroundService
+import com.assh.service.ForegroundSession
 import com.assh.ssh.ConnState
 import com.assh.ssh.HostKeyChangedException
 import com.assh.terminal.AsshTerminalSessionClient
 import com.assh.terminal.SshSessionTransport
 import com.assh.ui.theme.GreenSuccess
 import com.termux.terminal.TerminalSession
+import com.assh.ssh.hostKeyChange
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -43,6 +45,8 @@ class TerminalViewModel(app: Application) : AndroidViewModel(app) {
     private val hostRepo = asshApp.hostRepository
     private val manager = asshApp.connectionManager
     private val registry = asshApp.terminalRegistry
+    private val foregroundSession = asshApp.terminalForegroundSession
+    private var foregroundGeneration = -1L
 
     private val _ui = MutableStateFlow(TerminalUiState())
     val ui = _ui.asStateFlow()
@@ -80,6 +84,8 @@ class TerminalViewModel(app: Application) : AndroidViewModel(app) {
 
     private var hostId: Long = -1
     private var stateWatchJob: Job? = null
+    private var connectionJob: Job? = null
+    private var connectionPassword: String? = null
 
     fun init(hostId: Long) {
         if (this.hostId == hostId) return
@@ -89,6 +95,13 @@ class TerminalViewModel(app: Application) : AndroidViewModel(app) {
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
         viewModelScope.launch {
+            foregroundSession.status.collect { status ->
+                if (status.generation == foregroundGeneration && status.error != null && !status.active && !status.starting) {
+                    _ui.value = _ui.value.copy(connState = ConnState.ERROR, error = status.error)
+                }
+            }
+        }
+        viewModelScope.launch {
             val host = hostRepo.findById(hostId)
             _ui.value = _ui.value.copy(host = host)
 
@@ -96,6 +109,7 @@ class TerminalViewModel(app: Application) : AndroidViewModel(app) {
             val existing = manager.get(hostId)
             val existingTerm = registry.get(hostId)
             if (existing != null && existing.state.value == ConnState.CONNECTED && existingTerm != null) {
+                foregroundGeneration = foregroundSession.status.value.generation
                 // 回调必须重绑到本 VM：旧 VM 已随上次退出销毁（onScreenUpdated 已置 null），
                 // 不重绑则重进后输出不再触发重绘，终端画面冻结
                 existingTerm.updateTerminalSessionClient(makeSessionClient(existing))
@@ -111,9 +125,10 @@ class TerminalViewModel(app: Application) : AndroidViewModel(app) {
     /** 构建绑定到当前 VM 的会话回调；新建与复用 TerminalSession 都必须经此绑定 */
     private fun makeSessionClient(ssh: com.assh.ssh.SshTransport) = AsshTerminalSessionClient(
         onTextChangedHook = { onScreenUpdated?.invoke() },
-        onSessionFinishedHook = {
+        onSessionFinishedHook = finished@{
+            if (manager.get(hostId) !== ssh) return@finished
             ssh.markDisconnected()
-            _ui.value = _ui.value.copy(connState = ConnState.DISCONNECTED, error = ssh.lastError)
+            publishDisconnectedState(ConnState.DISCONNECTED, ssh.lastError)
             // 意外断线（服务器关会话 / shell 退出 / 网络中断）也必须回收资源：
             // 移除僵尸 session、取消状态订阅，并在无活跃连接时停掉前台 Service。
             // 否则前台通知钉住进程，划掉 App 后进程仍不被系统回收（"关 App 后不恢复"）。
@@ -127,11 +142,15 @@ class TerminalViewModel(app: Application) : AndroidViewModel(app) {
 
     /** @param inputPassword 配置未存密码时由弹窗提供 */
     fun connect(inputPassword: String?) {
-        viewModelScope.launch {
+        connectionJob?.cancel()
+        stateWatchJob?.cancel()
+        connectionPassword = inputPassword
+        connectionJob = viewModelScope.launch {
             _ui.value = _ui.value.copy(
                 connState = ConnState.CONNECTING,
                 error = null, needPassword = false, hostKeyChanged = null
             )
+            var lease: ForegroundSession.Lease? = null
             try {
                 var cfg = hostRepo.resolveForConnect(hostId)
                 if (cfg.authType == com.assh.data.db.entity.AuthType.PASSWORD && cfg.password == null) {
@@ -142,9 +161,12 @@ class TerminalViewModel(app: Application) : AndroidViewModel(app) {
                     cfg = cfg.copy(password = inputPassword)
                 }
 
+                lease = foregroundSession.request()
+                foregroundGeneration = lease.generation
+                lease.awaitReady()
                 val ssh = manager.connect(cfg)
+                lease.awaitReady()
                 hostRepo.touchLastConnected(hostId)
-                SshForegroundService.start(getApplication())
 
                 // 建终端会话：SSH 流 → SessionTransport → TerminalSession
                 val term = TerminalSession(SshSessionTransport(ssh), 2000, makeSessionClient(ssh))
@@ -156,13 +178,13 @@ class TerminalViewModel(app: Application) : AndroidViewModel(app) {
 
                 // 初始命令（功能 1 高级设置）：等 emulator 就绪后由 onEmulatorReady 下发
                 pendingInitialCommand = cfg.initialCommand
-            } catch (e: HostKeyChangedException) {
-                _ui.value = _ui.value.copy(connState = ConnState.ERROR, hostKeyChanged = e)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                _ui.value = _ui.value.copy(
-                    connState = ConnState.ERROR,
-                    error = e.message ?: e.javaClass.simpleName
-                )
+                showConnectionError(e)
+            } finally {
+                lease?.close()
+                stopServiceIfNoActiveConnections()
             }
         }
     }
@@ -173,47 +195,84 @@ class TerminalViewModel(app: Application) : AndroidViewModel(app) {
         stateWatchJob = viewModelScope.launch {
             ssh.state.collect { s ->
                 if (s == ConnState.DISCONNECTED || s == ConnState.ERROR) {
-                    _ui.value = _ui.value.copy(connState = s, error = ssh.lastError)
+                    publishDisconnectedState(s, ssh.lastError)
                 }
             }
         }
     }
 
+    private fun publishDisconnectedState(state: ConnState, transportError: String?) {
+        val backgroundError = foregroundSession.status.value
+            .takeIf { it.generation == foregroundGeneration && !it.active }?.error
+        _ui.value = _ui.value.copy(
+            connState = if (backgroundError != null) ConnState.ERROR else state,
+            error = backgroundError ?: transportError
+        )
+    }
+
     /** 一键重连（功能 6） */
     fun reconnect() {
-        viewModelScope.launch {
-            _ui.value = _ui.value.copy(connState = ConnState.CONNECTING, error = null)
+        if (manager.cachedConfig(hostId) == null) {
+            connect(connectionPassword)
+            return
+        }
+        connectionJob?.cancel()
+        stateWatchJob?.cancel()
+        connectionJob = viewModelScope.launch {
+            _ui.value = _ui.value.copy(connState = ConnState.CONNECTING, error = null, hostKeyChanged = null)
+            val lease = foregroundSession.request()
+            foregroundGeneration = lease.generation
             try {
+                lease.awaitReady()
                 registry.remove(hostId)?.finishIfRunning()
                 val ssh = manager.reconnect(hostId)
+                lease.awaitReady()
                 val term = TerminalSession(SshSessionTransport(ssh), 2000, makeSessionClient(ssh))
                 termSession = term
                 registry.put(hostId, term)
                 watchState()
                 _ui.value = _ui.value.copy(connState = ConnState.CONNECTED, connectedToast = true)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                // 无缓存配置（如进程被杀后重启）→ 走完整连接流程
-                if (e is IllegalStateException) {
-                    connect(null)
-                } else {
-                    _ui.value = _ui.value.copy(connState = ConnState.ERROR, error = e.message)
-                }
+                showConnectionError(e)
+            } finally {
+                lease.close()
+                stopServiceIfNoActiveConnections()
             }
         }
     }
 
-    /** HostKey 变更：用户确认信任 → 更新指纹后重连 */
+    private fun showConnectionError(error: Throwable) {
+        val changed = error.hostKeyChange()
+        manager.get(hostId)?.close()
+        manager.cleanupDisconnected(hostId)
+        _ui.value = _ui.value.copy(
+            connState = ConnState.ERROR,
+            hostKeyChanged = changed,
+            error = if (changed == null) error.message ?: "连接失败" else null
+        )
+    }
+
+    /** 用户明确确认后仅删除当前服务器的旧指纹。 */
     fun trustNewHostKey() {
         val ex = _ui.value.hostKeyChanged ?: return
-        viewModelScope.launch {
-            asshApp.database.knownHostDao().delete(ex.hostPort)
-            _ui.value = _ui.value.copy(hostKeyChanged = null)
-            connect(null)
+        _ui.value = _ui.value.copy(hostKeyChanged = null)
+        connectionJob = viewModelScope.launch {
+            try {
+                asshApp.database.knownHostDao().delete(ex.hostPort)
+                reconnect()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _ui.value = _ui.value.copy(connState = ConnState.ERROR, error = "更新指纹失败：${e.message}", hostKeyChanged = ex)
+            }
         }
     }
 
     fun dismissHostKeyDialog() {
-        _ui.value = _ui.value.copy(hostKeyChanged = null, connState = ConnState.ERROR, error = "已取消连接（host key 未信任）")
+        connectionJob?.cancel()
+        _ui.value = _ui.value.copy(hostKeyChanged = null, connState = ConnState.ERROR, error = "已取消连接（服务器指纹未信任）")
     }
 
     fun consumeConnectedToast() {
@@ -281,8 +340,8 @@ class TerminalViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 无活跃连接时停掉前台 Service（C5：原本在 disconnect 与意外断线回调里各写一份） */
     private fun stopServiceIfNoActiveConnections() {
-        if (manager.activeCount == 0) {
-            SshForegroundService.stop(getApplication())
+        if (manager.activeCount == 0 && foregroundSession.status.value.pendingOperations == 0) {
+            foregroundSession.stop(foregroundGeneration)
         }
     }
 

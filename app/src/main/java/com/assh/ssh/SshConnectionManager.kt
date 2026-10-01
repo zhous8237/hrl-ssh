@@ -5,7 +5,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -17,8 +16,7 @@ import java.util.concurrent.ConcurrentHashMap
  * 进程内单例，由前台 Service 间接持有；缓存最近一次成功连接的
  * ResolvedHostConfig，支持一键重连（无需重新解密/输密码）。
  *
- * 后台保活（功能 6）：App 退到后台不立即断开，由 ProcessLifecycle 调用
- * onAppBackgrounded / onAppForegrounded 控制一个 10 分钟延时断开计时器。
+ * 已连接会话由前台服务维持；切换后台不设置额外的强制断开时限。
  *
  * C2 seam：会话经 [SshTransportFactory] 创建（生产为 sshj，测试为内存 fake），
  * [scope] 可注入以便测试用 TestScope 驱动状态聚合。
@@ -35,8 +33,6 @@ class SshConnectionManager(
 
     /** 重连用的配置缓存（含明文凭据，进程级内存，不落盘） */
     private val configCache = ConcurrentHashMap<Long, ResolvedHostConfig>()
-
-    private var backgroundTimerJob: Job? = null
 
     /** 各主机连接状态聚合流（主机列表实时刷新用）。无连接的主机不在 map 中，视为 IDLE。 */
     private val _states = MutableStateFlow<Map<Long, ConnState>>(emptyMap())
@@ -59,22 +55,6 @@ class SshConnectionManager(
         watchJobs[hostId] = scope.launch {
             session.state.collect { publishState(hostId, it) }
         }
-    }
-
-    /** App 退到后台：启动 10 分钟延时断开计时；超时未回前台则全部断开 */
-    fun onAppBackgrounded(graceMillis: Long = 10 * 60 * 1000L) {
-        backgroundTimerJob?.cancel()
-        if (activeCount == 0) return
-        backgroundTimerJob = scope.launch {
-            delay(graceMillis)
-            disconnectAll()
-        }
-    }
-
-    /** App 回到前台：取消待执行的断开计时 */
-    fun onAppForegrounded() {
-        backgroundTimerJob?.cancel()
-        backgroundTimerJob = null
     }
 
     fun get(hostId: Long): SshTransport? = sessions[hostId]
@@ -134,6 +114,14 @@ class SshConnectionManager(
         }
         watchJobs.remove(hostId)?.cancel()
         removeState(hostId)
+    }
+
+    /** 系统后台能力撤回时关闭连接，但保留手动重连配置。 */
+    fun stopForBackgroundLimit() {
+        sessions.keys.toList().forEach { hostId ->
+            sessions[hostId]?.close()
+            cleanupDisconnected(hostId)
+        }
     }
 
     fun disconnectAll() {

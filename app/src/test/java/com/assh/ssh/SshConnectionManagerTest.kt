@@ -4,6 +4,8 @@ import com.assh.data.db.entity.AuthType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -41,6 +43,18 @@ class SshConnectionManagerTest {
         factory: SshTransportFactory,
         scope: CoroutineScope
     ) = SshConnectionManager(factory, scope)
+
+    @Test
+    fun `后台超过十分钟仍保留终端连接`() = runTest {
+        val factory = RecordingFactory()
+        val mgr = manager(factory, backgroundScope)
+        val transport = mgr.connect(cfg(1))
+        // 后台强断入口已整体移除，只推进时间不会取消任何有效连接。
+        advanceTimeBy(600_001)
+        runCurrent()
+        assertEquals(ConnState.CONNECTED, transport.state.value)
+        assertNotNull(mgr.cachedConfig(1))
+    }
 
     @Test
     fun `connect creates and returns a connected transport`() = runTest {

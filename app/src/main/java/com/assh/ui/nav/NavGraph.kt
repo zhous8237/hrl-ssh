@@ -6,12 +6,14 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.assh.ui.config.ConfigScreen
 import com.assh.ui.home.HomeScreen
 import com.assh.ui.hosts.HostEditScreen
 import com.assh.ui.terminal.TerminalScreen
 
 object Routes {
     const val HOME = "home"
+    const val CONFIG = "config"
     const val HOST_EDIT = "host_edit?hostId={hostId}"
     const val TERMINAL = "terminal/{hostId}"
 
@@ -30,7 +32,8 @@ fun AsshNavGraph() {
             HomeScreen(
                 onOpenTerminal = { nav.navigate(Routes.terminal(it)) },
                 onEditHost = { nav.navigate(Routes.hostEdit(it)) },
-                onAddHost = { nav.navigate(Routes.hostEdit()) }
+                onAddHost = { nav.navigate(Routes.hostEdit()) },
+                onOpenConfig = { nav.navigate(Routes.CONFIG) { launchSingleTop = true } }
             )
         }
         composable(
@@ -45,7 +48,14 @@ fun AsshNavGraph() {
             arguments = listOf(navArgument("hostId") { type = NavType.LongType })
         ) { entry ->
             val hostId = entry.arguments!!.getLong("hostId")
-            TerminalScreen(hostId = hostId, onBack = { nav.popBackStack() })
+            TerminalScreen(
+                hostId = hostId,
+                onBack = { nav.popBackStack() },
+                onOpenConfig = { nav.navigate(Routes.CONFIG) { launchSingleTop = true } }
+            )
+        }
+        composable(Routes.CONFIG) {
+            ConfigScreen(onBack = { nav.popBackStack() })
         }
     }
 }
