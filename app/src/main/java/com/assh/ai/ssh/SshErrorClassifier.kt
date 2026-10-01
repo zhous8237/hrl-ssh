@@ -1,6 +1,6 @@
 package com.assh.ai.ssh
 
-import com.assh.ssh.HostKeyChangedException
+import com.assh.ssh.hostKeyChange
 
 /** SSH 错误的重试取向：可退避重连 vs 致命（须用户处理）。 */
 enum class SshErrorKind { TRANSIENT, FATAL }
@@ -35,10 +35,10 @@ object SshErrorClassifier {
     )
 
     fun classify(error: Throwable): SshErrorKind {
+        if (error.hostKeyChange() != null) return SshErrorKind.FATAL
         var t: Throwable? = error
         var depth = 0
         while (t != null && depth < 16) {   // 限深防自引用/超长 cause 链
-            if (t is HostKeyChangedException) return SshErrorKind.FATAL
             val cls = t.javaClass.simpleName.lowercase()
             if (fatalClassNames.any { cls.contains(it) }) return SshErrorKind.FATAL
             val msg = t.message?.lowercase()

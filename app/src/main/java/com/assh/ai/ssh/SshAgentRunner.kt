@@ -148,7 +148,7 @@ class SshAgentRunner(
             val exit = runCatching { cmd.exitStatus }.getOrNull()
             if (interrupted) {
                 // 半途断：原地退避重连（不重跑命令），成功则连接可继续，余下由模型决定
-                reconnected = runCatching { reconnectWithBackoff(RECONNECT_BUDGET_MS) }.getOrDefault(false)
+                reconnected = reconnectWithBackoff(RECONNECT_BUDGET_MS)
             }
             ExecResult(
                 stdout = out.toString().trimEnd(),
@@ -172,8 +172,14 @@ class SshAgentRunner(
             "echo \"USER: \$(whoami) (uid=\$(id -u))\"; " +
             "echo \"PWD: \$(pwd)\"; " +
             "echo \"PKG: \$(command -v apt-get dnf yum apk pacman zypper 2>/dev/null | tr '\\n' ' ')\""
-        return runCatching { runCommand(probe, timeoutSec = 20).stdout }
-            .getOrElse { "（系统探测失败：${it.message}）" }
+        return try {
+            runCommand(probe, timeoutSec = 20).stdout
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (SshErrorClassifier.classify(e) == SshErrorKind.FATAL) throw e
+            "（系统探测失败：${e.message}）"
+        }
     }
 
     fun close() {

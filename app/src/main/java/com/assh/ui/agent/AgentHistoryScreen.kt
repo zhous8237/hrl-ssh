@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -46,6 +48,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.assh.ai.AgentRunRecord
 import com.assh.ai.RecordEntry
+import com.assh.ui.common.ScrollToEdgeButtons
 import com.assh.ui.theme.AmberWarning
 import com.assh.ui.theme.BlueAccent
 import com.assh.ui.theme.GreenSuccess
@@ -170,7 +173,8 @@ private fun HistoryCard(record: AgentRunRecord, onClick: () -> Unit, onDelete: (
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun RecordDetailScreen(record: AgentRunRecord, onBack: () -> Unit, onResume: () -> Unit) {
+internal fun RecordDetailScreen(record: AgentRunRecord, onBack: () -> Unit, onResume: () -> Unit) {
+    val listState = rememberLazyListState()
     Scaffold(
         containerColor = Navy900,
         topBar = {
@@ -190,18 +194,23 @@ private fun RecordDetailScreen(record: AgentRunRecord, onBack: () -> Unit, onRes
             )
         }
     ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            item {
-                Text(
-                    "${record.hostLabel.ifBlank { "(主机未知)" }} · ${formatTime(record.startedAt)}" +
-                        if (record.hostId >= 0) " · 点右上角 ▶ 可继续此会话" else "",
-                    color = Slate400, style = MaterialTheme.typography.bodySmall
-                )
+        Box(Modifier.fillMaxSize().padding(padding)) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize().padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                item {
+                    Text(
+                        "${record.hostLabel.ifBlank { "(主机未知)" }} · ${formatTime(record.startedAt)}" +
+                            if (record.hostId >= 0) " · 点右上角 ▶ 可继续此会话" else "",
+                        color = Slate400, style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                items(record.entries) { e -> RecordEntryView(e) }
+                item { Spacer(Modifier.height(4.dp)) }
             }
-            items(record.entries) { e -> RecordEntryView(e) }
+            ScrollToEdgeButtons(listState)
         }
     }
 }

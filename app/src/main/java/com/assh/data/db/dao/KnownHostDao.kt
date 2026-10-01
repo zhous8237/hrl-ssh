@@ -21,4 +21,8 @@ interface KnownHostDao {
 
     @Query("DELETE FROM known_hosts WHERE hostPort = :hostPort")
     suspend fun delete(hostPort: String)
+
+    /** 仅清除服务器指纹，不影响连接配置、凭据或历史。 */
+    @Query("DELETE FROM known_hosts")
+    suspend fun clear()
 }

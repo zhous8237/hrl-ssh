@@ -3,6 +3,8 @@ package com.assh.ai.ssh
 import com.assh.data.db.dao.KnownHostDao
 import com.assh.data.db.entity.AuthType
 import com.assh.ssh.AsshHostKeyVerifier
+import com.assh.ssh.hostKeyChange
+import kotlinx.coroutines.CancellationException
 import com.assh.ssh.ResolvedHostConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -56,20 +58,25 @@ class SshjAgentClientFactory(private val knownHostDao: KnownHostDao) : AgentSshC
         // 不发心跳会被服务器/NAT 断开，下一条命令就报 not connected / 卡死在读流。
         val config = DefaultConfig().apply { keepAliveProvider = KeepAliveProvider.KEEP_ALIVE }
         val c = SSHClient(config)
-        c.addHostKeyVerifier(AsshHostKeyVerifier(knownHostDao))
-        c.connectTimeout = 15_000
-        c.timeout = 0
-        c.connect(cfg.host, cfg.port)
-        c.connection.keepAlive.keepAliveInterval = 20
-        // 默认 maxAliveCount=5：5×20s=100s 没收到心跳回包就自杀式断开。抓 GitHub 页 + 喂大段内容
-        // 给慢/被限流模型的间隙很容易超过它。调高到 30（≈600s）避免长间隙被自身 keepalive 误杀。
-        (c.connection.keepAlive as? KeepAliveRunner)?.maxAliveCount = 30
-        when (cfg.authType) {
-            AuthType.PASSWORD ->
-                c.authPassword(cfg.username, cfg.password ?: throw IllegalStateException("密码未提供"))
-            AuthType.KEY ->
-                c.authPublickey(cfg.username, c.loadKeys(cfg.privateKeyPem ?: throw IllegalStateException("私钥未提供"), null, null))
+        try {
+            c.addHostKeyVerifier(AsshHostKeyVerifier(knownHostDao))
+            c.connectTimeout = 15_000
+            c.timeout = 0
+            c.connect(cfg.host, cfg.port)
+            c.connection.keepAlive.keepAliveInterval = 20
+            // 延续 600 秒心跳预算，避免模型长响应期间误判连接失效。
+            (c.connection.keepAlive as? KeepAliveRunner)?.maxAliveCount = 30
+            when (cfg.authType) {
+                AuthType.PASSWORD ->
+                    c.authPassword(cfg.username, cfg.password ?: throw IllegalStateException("密码未提供"))
+                AuthType.KEY ->
+                    c.authPublickey(cfg.username, c.loadKeys(cfg.privateKeyPem ?: throw IllegalStateException("私钥未提供"), null, null))
+            }
+            SshjAgentClient(c)
+        } catch (e: Exception) {
+            runCatching { c.disconnect() }
+            if (e is CancellationException) throw e
+            throw (e.hostKeyChange() ?: e)
         }
-        SshjAgentClient(c)
     }
 }

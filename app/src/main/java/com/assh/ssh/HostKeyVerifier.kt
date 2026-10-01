@@ -18,6 +18,10 @@ class HostKeyChangedException(
     "服务器 $hostPort 的 host key 已变更！保存的指纹: $savedFingerprint, 当前指纹: $actualFingerprint"
 )
 
+/** sshj 会包装校验异常；限深遍历原因链，避免循环引用。 */
+fun Throwable.hostKeyChange(): HostKeyChangedException? =
+    generateSequence(this) { it.cause }.take(16).filterIsInstance<HostKeyChangedException>().firstOrNull()
+
 /**
  * TOFU 信任模型（文档 §7.3）：
  * - 首次连接：记录指纹到 known_hosts 表，信任。

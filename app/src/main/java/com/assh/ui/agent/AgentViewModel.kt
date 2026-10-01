@@ -70,6 +70,7 @@ class AgentViewModel(app: Application) : AndroidViewModel(app) {
     fun reject() = engine.reject()
     fun trustHostKey() = engine.trustHostKey()
     fun rejectHostKey() = engine.rejectHostKey()
+    fun prepareHostKeySettings() = engine.prepareHostKeySettings()
     fun consumeFinished() = engine.consumeFinishedMessage()
 
     // —— 多配置 ——

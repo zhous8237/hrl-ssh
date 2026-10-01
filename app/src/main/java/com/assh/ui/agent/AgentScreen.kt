@@ -4,7 +4,7 @@ import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxScope
+import com.assh.ui.common.ScrollToEdgeButtons
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
@@ -27,8 +26,6 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
@@ -59,7 +56,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -69,12 +65,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import kotlinx.coroutines.launch
 import com.assh.ai.AgentPhase
 import com.assh.ai.CmdStatus
 import com.assh.ai.PendingConfirm
 import com.assh.ai.TimelineItem
 import com.assh.ai.llm.LlmProfile
+import com.assh.ui.common.BackgroundExecutionHint
 import com.assh.ui.hosts.asshFieldColors
 import com.assh.ui.theme.AmberWarning
 import com.assh.ui.theme.BlueAccent
@@ -93,6 +89,7 @@ fun AgentScreen(
     onBack: (() -> Unit)? = null,
     onOpenSettings: () -> Unit,
     onOpenHistory: () -> Unit,
+    onOpenConfig: () -> Unit,
     vm: AgentViewModel = viewModel()
 ) {
     val st by vm.state.collectAsState()
@@ -157,6 +154,8 @@ fun AgentScreen(
                 else -> ModelSelectorBar(profiles, activeProfile, onSelect = { vm.setActiveProfile(it) })
             }
 
+            if (st.sessionActive) BackgroundExecutionHint(onOpenConfig)
+
             // 时间线（主体，可滚动）+ 右下角"回顶/到底"浮动按钮
             Box(Modifier.weight(1f).fillMaxWidth()) {
             LazyColumn(
@@ -208,7 +207,8 @@ fun AgentScreen(
             HostKeyChangeDialog(
                 pending,
                 onTrust = { vm.trustHostKey() },
-                onReject = { vm.rejectHostKey() }
+                onReject = { vm.rejectHostKey() },
+                onOpenConfig = { vm.prepareHostKeySettings(); onOpenConfig() }
             )
         }
     }
@@ -514,7 +514,8 @@ private fun ConfirmCard(pending: PendingConfirm, onApprove: () -> Unit, onReject
 private fun HostKeyChangeDialog(
     pending: com.assh.ai.PendingHostKey,
     onTrust: () -> Unit,
-    onReject: () -> Unit
+    onReject: () -> Unit,
+    onOpenConfig: () -> Unit
 ) {
     AlertDialog(
         onDismissRequest = onReject,
@@ -545,51 +546,14 @@ private fun HostKeyChangeDialog(
         confirmButton = {
             TextButton(onClick = onTrust) { Text("信任并继续", color = MaterialTheme.colorScheme.error) }
         },
-        dismissButton = { TextButton(onClick = onReject) { Text("取消") } },
+        dismissButton = {
+            Column {
+                TextButton(onClick = onOpenConfig) { Text("前往设置清除") }
+                TextButton(onClick = onReject) { Text("取消") }
+            }
+        },
         containerColor = Navy800
     )
-}
-
-/** 时间线右下角的"回顶部 / 到底部"浮动按钮：到顶时隐藏回顶、到底时隐藏到底、不满一屏两者都不显示 */
-@Composable
-private fun BoxScope.ScrollToEdgeButtons(listState: androidx.compose.foundation.lazy.LazyListState) {
-    val scope = rememberCoroutineScope()
-    Column(
-        modifier = Modifier.align(Alignment.BottomEnd).padding(end = 10.dp, bottom = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        if (listState.canScrollBackward) {
-            ScrollFab(Icons.Default.KeyboardArrowUp, "回到顶部") {
-                scope.launch { listState.animateScrollToItem(0) }
-            }
-        }
-        if (listState.canScrollForward) {
-            ScrollFab(Icons.Default.KeyboardArrowDown, "到最底部") {
-                scope.launch {
-                    listState.animateScrollToItem((listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ScrollFab(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    desc: String,
-    onClick: () -> Unit
-) {
-    Surface(
-        onClick = onClick,
-        shape = CircleShape,
-        color = Navy800.copy(alpha = 0.92f),
-        shadowElevation = 4.dp,
-        modifier = Modifier.size(40.dp)
-    ) {
-        Box(contentAlignment = Alignment.Center) {
-            Icon(icon, desc, tint = BlueAccent, modifier = Modifier.size(24.dp))
-        }
-    }
 }
 
 private fun phaseLabel(phase: AgentPhase, step: Int): String = when (phase) {
