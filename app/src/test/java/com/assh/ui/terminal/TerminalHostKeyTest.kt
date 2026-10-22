@@ -2,6 +2,7 @@ package com.assh.ui.terminal
 
 import androidx.lifecycle.ViewModelStore
 import com.assh.AsshApp
+import io.mockk.verify
 import com.assh.data.db.dao.KnownHostDao
 import com.assh.data.db.entity.AuthType
 import com.assh.data.repo.HostRepository
@@ -95,7 +96,8 @@ class TerminalHostKeyTest {
             coEvery { app.hostRepository.resolveForConnect(1) } returns cfg
             coEvery { manager.connect(cfg) } throws changed
             coEvery { manager.reconnect(1) } throws IOException("网络断线")
-            coEvery { dao.delete("host:22") } throws IllegalStateException("数据库繁忙")
+            // 现在是“追加记录新指纹”，因此模拟 insert 失败
+            every { dao.insertBlocking(any()) } throws IllegalStateException("数据库繁忙")
             val vm = TerminalViewModel(app)
             store.put("terminal", vm)
             vm.init(1)
@@ -104,12 +106,14 @@ class TerminalHostKeyTest {
             runCurrent()
             assertSame(changed, vm.ui.value.hostKeyChanged)
             assertTrue(vm.ui.value.error!!.contains("更新指纹失败"))
-            coEvery { dao.delete("host:22") } returns Unit
+            every { dao.insertBlocking(any()) } returns Unit
             vm.trustNewHostKey()
             runCurrent()
             assertNull(vm.ui.value.hostKeyChanged)
             assertEquals("网络断线", vm.ui.value.error)
-            coVerify(exactly = 2) { dao.delete("host:22") }
+            // 两次都是追加信任，且不删除同主机其它指纹、不整表清空
+            verify(exactly = 2) { dao.insertBlocking(any()) }
+            coVerify(exactly = 0) { dao.delete("host:22") }
             coVerify(exactly = 0) { dao.clear() }
         } finally {
             store.clear()

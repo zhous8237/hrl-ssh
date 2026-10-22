@@ -260,7 +260,18 @@ class TerminalViewModel(app: Application) : AndroidViewModel(app) {
         _ui.value = _ui.value.copy(hostKeyChanged = null)
         connectionJob = viewModelScope.launch {
             try {
-                asshApp.database.knownHostDao().delete(ex.hostPort)
+                // 追加信任新指纹（不删旧记录）：同一主机可能是多台后端轮转
+                asshApp.database.knownHostDao().insertBlocking(
+                    com.assh.data.db.entity.KnownHostEntity(
+                        id = com.assh.data.db.entity.KnownHostEntity.makeId(
+                            ex.hostPort, ex.actualFingerprint
+                        ),
+                        hostPort = ex.hostPort,
+                        keyType = ex.actualKeyType,
+                        fingerprintSha256 = ex.actualFingerprint,
+                        publicKeyBlob = ex.actualKeyBlob
+                    )
+                )
                 reconnect()
             } catch (e: CancellationException) {
                 throw e

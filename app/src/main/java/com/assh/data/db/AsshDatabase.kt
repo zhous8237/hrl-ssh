@@ -20,7 +20,7 @@ import com.assh.data.db.entity.KnownHostEntity
 
 @Database(
     entities = [HostEntity::class, KeyEntity::class, CredentialEntity::class, CommandEntity::class, KnownHostEntity::class],
-    version = 5,
+    version = 6,
     exportSchema = true
 )
 @TypeConverters(Converters::class)
@@ -54,6 +54,38 @@ abstract class AsshDatabase : RoomDatabase() {
                 }
             }
         }
+        /**
+         * v5→v6：known_hosts 支持同一 host:port 记录多把主机密钥
+         * （负载均衡/多节点域名、密钥轮换）。
+         *
+         * 旧表主键是 hostPort 单列，新表为 id（hostPort#指纹）单列 + hostPort 索引。
+         * SQLite 无法直接改主键，故重建表并搬数据；旧数据天然一对一，可直接迁移。
+         */
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `known_hosts_new` (" +
+                        "`id` TEXT NOT NULL, " +
+                        "`hostPort` TEXT NOT NULL, " +
+                        "`keyType` TEXT NOT NULL, " +
+                        "`fingerprintSha256` TEXT NOT NULL, " +
+                        "`publicKeyBlob` BLOB NOT NULL, " +
+                        "`addedAt` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`id`))"
+                )
+                // 旧表没有 addedAt，回填迁移时刻；id 用「hostPort#指纹」拼出，与实体一致
+                val now = System.currentTimeMillis()
+                db.execSQL(
+                    "INSERT OR REPLACE INTO `known_hosts_new` " +
+                        "(`id`, `hostPort`, `keyType`, `fingerprintSha256`, `publicKeyBlob`, `addedAt`) " +
+                        "SELECT `hostPort` || '#' || `fingerprintSha256`, `hostPort`, `keyType`, " +
+                        "`fingerprintSha256`, `publicKeyBlob`, $now FROM `known_hosts`"
+                )
+                db.execSQL("DROP TABLE `known_hosts`")
+                db.execSQL("ALTER TABLE `known_hosts_new` RENAME TO `known_hosts`")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_known_hosts_hostPort` ON `known_hosts` (`hostPort`)")
+            }
+        }
 
         fun get(context: Context): AsshDatabase =
             instance ?: synchronized(this) {
@@ -61,7 +93,7 @@ abstract class AsshDatabase : RoomDatabase() {
                     context.applicationContext,
                     AsshDatabase::class.java,
                     "assh.db"
-                ).addMigrations(MIGRATION_4_5)
+                ).addMigrations(MIGRATION_4_5, MIGRATION_5_6)
                     // 不用 fallbackToDestructiveMigration()：本库存着用户唯一一份 SSH 私钥/密码，
                     // 静默清库换不崩溃是不可接受的取舍。缺失迁移时宁可启动即抛 IllegalStateException
                     // （明确暴露问题），也不能悄悄抹掉数据。改 schema 必须随版本号补 Migration。

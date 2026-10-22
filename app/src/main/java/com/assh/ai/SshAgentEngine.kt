@@ -17,8 +17,10 @@ import com.assh.ai.tools.ShellOutcome
 import com.assh.ai.tools.ToolContext
 import com.assh.ai.tools.ToolOutcome
 import com.assh.data.db.dao.KnownHostDao
+import com.assh.data.db.entity.KnownHostEntity
 import com.assh.data.repo.HostRepository
 import com.assh.service.AgentForegroundService
+import kotlinx.coroutines.withContext
 import com.assh.service.ForegroundSession
 import com.assh.ssh.HostKeyChangedException
 import com.assh.ssh.hostKeyChange
@@ -62,6 +64,9 @@ class SshAgentEngine(
 
         /** 一轮结束后，闲置超过此时长（无追加指令）自动结束会话、释放 SSH 连接 */
         private const val IDLE_TIMEOUT_MS = 10 * 60 * 1000L
+
+        /** 输入框留空点「继续」时发送的固定文本：让模型接着已有上下文推进 */
+        private const val CONTINUE_PROMPT = "继续"
     }
 
     private val webFetcher = WebFetcher()
@@ -155,11 +160,16 @@ class SshAgentEngine(
         launchProtected { setupAndRun(hostId, g) }
     }
 
-    /** 在当前会话上追加指令继续；text 为空则重新执行原任务。断线态下即「立即重连」入口 */
+    /**
+     * 在当前会话上追加指令继续。
+     *
+     * text 为空时发送固定的「继续」二字：让模型基于已有上下文接着做下一步，
+     * 而不是重放整段原始目标（重放会产生大量重复动作）。
+     * 断线态下本方法也是「立即重连」的入口。
+     */
     fun continueTask(text: String) {
         if (_state.value.phase != AgentPhase.AWAITING_FOLLOWUP) return
-        val t = text.trim().ifBlank { sessionTitle }
-        if (t.isBlank()) return
+        val t = text.trim().ifBlank { CONTINUE_PROMPT }
         cancelIdleTimer()
         cancelReconnect()   // 接管后台重连，避免双路并发
         setPhase(AgentPhase.THINKING)
@@ -412,12 +422,34 @@ class SshAgentEngine(
                 val changed = e.hostKeyChange() ?: throw e
                 val approved = awaitHostKeyConfirm(changed)
                 if (!approved) throw IllegalStateException("已取消连接：未信任服务器的新指纹")
-                knownHostDao.delete(changed.hostPort)
-                // 回到循环重连：旧指纹已删，校验器将记录新指纹。
+                // 追加信任这把新密钥，而不是删除旧记录：
+                // 同一 host:port 可能对应多台后端（负载均衡），删掉会让另一台再弹一次。
+                daoInsertTrusted(changed)
+                // 回到循环重连：新指纹已记录，校验器这次会命中。
             }
         }
     }
 
+
+    /**
+     * 追加信任一把主机密钥（不删除同主机其它指纹）。
+     *
+     * 负载均衡/多节点域名下，同一 host:port 会有多台后端、各自主机密钥；
+     * 若沿用“删旧再记录”，用户会在不同后端间来回弹窗。
+     */
+    private suspend fun daoInsertTrusted(e: HostKeyChangedException) {
+        // 引擎本身跑在 Dispatchers.IO 的 scope 上，直接写即可；
+        // 不再套 withContext(IO)：那会多一次线程切换，也会让测试的虚拟时间难以推进。
+        knownHostDao.insertBlocking(
+            KnownHostEntity(
+                id = KnownHostEntity.makeId(e.hostPort, e.actualFingerprint),
+                hostPort = e.hostPort,
+                keyType = e.actualKeyType,
+                fingerprintSha256 = e.actualFingerprint,
+                publicKeyBlob = e.actualKeyBlob
+            )
+        )
+    }
     private suspend fun awaitHostKeyConfirm(e: HostKeyChangedException): Boolean {
         val d = CompletableDeferred<Boolean>()
         hostKeyDeferred = d

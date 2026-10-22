@@ -2,9 +2,13 @@ package com.assh.ui.config
 
 import android.app.Application
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.test.hasScrollToNodeAction
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToNode
 import com.assh.data.db.dao.KnownHostDao
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -27,10 +31,21 @@ class ConfigScreenTest {
         coEvery { dao.clear() } answers { if (attempts++ == 0) throw IllegalStateException("数据库繁忙") }
         val vm = ConfigViewModel(dao)
         compose.setContent { MaterialTheme { ConfigScreen(vm = vm) } }
-        compose.onNodeWithText("清除服务器指纹").performClick()
+
+        // 设置项在 LazyColumn 中且位于「凭据与安全」组（可能在视口外），先滚动过去
+        fun scrollToCredentials() {
+            compose.onNode(hasScrollToNodeAction())
+                .performScrollToNode(hasTestTag("settings_group_credentials"))
+        }
+        // 该组是合并的可点击行：用 hasText(substring) 命中整行
+        fun credentialRow() = compose.onNode(hasText("清除服务器指纹", substring = true))
+
+        scrollToCredentials()
+        credentialRow().performClick()
         compose.onNodeWithText("取消").performClick()
         coVerify(exactly = 0) { dao.clear() }
-        compose.onNodeWithText("清除服务器指纹").performClick()
+
+        credentialRow().performClick()
         compose.onNodeWithText("确认清除").performClick()
         compose.onNodeWithText("清除失败：数据库繁忙，请重试").assertExists()
         compose.onNodeWithText("确认清除").performClick()
