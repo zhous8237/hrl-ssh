@@ -52,6 +52,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -118,8 +119,21 @@ fun AgentScreen(
 
     // 仅执行中自动滚到最新；非执行态（等待追加/结束）不强制滚动，返回页面保留位置
     val listState = rememberLazyListState()
+    // 是否跟随最新：用户停留在底部（或从未上滑）时才自动滚到最新。
+    // 上滑查看历史时不打扰，仅让新内容在下方继续追加。
+    val atBottom by remember {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            val lastVisible = info.visibleItemsInfo.lastOrNull()
+            lastVisible == null ||
+                lastVisible.index >= info.totalItemsCount - 2
+        }
+    }
     LaunchedEffect(st.timeline.size, st.running) {
-        if (st.running && st.timeline.isNotEmpty()) listState.animateScrollToItem(st.timeline.size)
+        if (st.timeline.isEmpty()) return@LaunchedEffect
+        if (!st.running) return@LaunchedEffect
+        // 仅在“跟随最新”状态下自动滚动；用户正在看上面时保持不动
+        if (atBottom) listState.animateScrollToItem(st.timeline.size)
     }
 
     Scaffold(
@@ -288,8 +302,8 @@ private fun BottomControl(
                 canContinue -> {
                     OutlinedTextField(
                         value = followup, onValueChange = onFollowupChange,
-                        label = { Text("追加指令（留空=重新执行原任务）") },
-                        placeholder = { Text("继续让 AI 做的事；留空直接点继续则重跑原任务") },
+                        label = { Text("追加指令（留空=发送「继续」）") },
+                        placeholder = { Text("留空点继续则按现有上下文推进下一步") },
                         minLines = 1, maxLines = 4, colors = asshFieldColors(), modifier = Modifier.fillMaxWidth()
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {

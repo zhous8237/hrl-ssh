@@ -8,6 +8,9 @@ import android.content.Intent
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.test.hasScrollToNodeAction
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -40,7 +43,11 @@ class BackgroundRunScreenTest {
         }
         val vm = BackgroundRunViewModel(context, ForegroundSession { }, ForegroundSession { })
         compose.setContent { MaterialTheme { BackgroundRunScreen(onBack = {}, vm = vm) } }
-        compose.onNodeWithText("电池优化：未豁免").assertExists()
+        // 新布局把状态拆成「标签 + 值」两列，分别断言
+        // 设置行是合并的可访问性节点，查子文本要用未合并树
+        compose.onNodeWithText("未豁免", useUnmergedTree = true).assertExists()
+        compose.onNode(hasScrollToNodeAction())
+            .performScrollToNode(hasText("打开电池优化设置"))
         compose.onNodeWithText("打开电池优化设置").performClick()
         assertEquals(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS, intents.first().action)
         assertEquals(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, intents.last().action)
@@ -49,7 +56,7 @@ class BackgroundRunScreenTest {
             shadowOf(app.getSystemService(PowerManager::class.java)).setIgnoringBatteryOptimizations(app.packageName, true)
             vm.refresh()
         }
-        compose.onNodeWithText("电池优化：已豁免").assertExists()
+        compose.onNodeWithText("已豁免", useUnmergedTree = true).assertExists()
     }
 
     @Test

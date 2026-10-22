@@ -240,7 +240,7 @@ class SshAgentEngineTest {
     }
 
     @Test
-    fun `确认信任只删除当前指纹并继续首次连接`() = runTest {
+    fun `确认信任时追加记录新指纹而不删除已有记录`() = runTest {
         val f = Fixture(this)
         var attempts = 0
         coEvery { f.runner.connect(any()) } answers {
@@ -254,7 +254,9 @@ class SshAgentEngineTest {
         runCurrent()
         assertTrue(f.engine.state.value.success)
         assertEquals(2, attempts)
-        coVerify(exactly = 1) { f.dao.delete("host:22") }
+        // 语义已改为“追加信任”：保留同主机其它指纹（多后端场景），不删旧、不整表清空
+        coVerify(exactly = 0) { f.dao.delete("host:22") }
+        coVerify(exactly = 1) { f.dao.insertBlocking(any()) }
         coVerify(exactly = 0) { f.dao.clear() }
     }
 

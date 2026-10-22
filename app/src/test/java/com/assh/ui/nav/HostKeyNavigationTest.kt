@@ -2,6 +2,10 @@ package com.assh.ui.nav
 
 import android.app.Application
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.hasScrollToNodeAction
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -44,8 +48,12 @@ class HostKeyNavigationTest {
     @Test
     fun `AI弹窗跳转前结束等待清理后返回可继续`() {
         val vm = mockk<AgentViewModel>(relaxed = true)
-        val state = MutableStateFlow(AgentState(phase = AgentPhase.WAITING_HOSTKEY,
-            pendingHostKey = PendingHostKey("host:22", "旧指纹", "新指纹")))
+        val state = MutableStateFlow(
+            AgentState(
+                phase = AgentPhase.WAITING_HOSTKEY,
+                pendingHostKey = PendingHostKey("host:22", "旧指纹", "新指纹")
+            )
+        )
         every { vm.state } returns state
         every { vm.hosts } returns MutableStateFlow(emptyList())
         every { vm.profiles } returns MutableStateFlow(emptyList())
@@ -71,10 +79,12 @@ class HostKeyNavigationTest {
             }
         }
         compose.onNodeWithText("前往设置清除").performClick()
-        compose.onNodeWithText("清除服务器指纹").assertExists()
+        compose.onNode(hasScrollToNodeAction())
+            .performScrollToNode(hasTestTag("settings_group_credentials"))
+        compose.onNode(hasText("清除服务器指纹", substring = true)).assertExists()
         compose.runOnIdle { assertEquals(Routes.CONFIG, nav.currentDestination?.route) }
         coVerify(exactly = 0) { dao.clear() }
-        compose.onNodeWithText("清除服务器指纹").performClick()
+        compose.onNode(hasText("清除服务器指纹", substring = true)).performClick()
         compose.onNodeWithText("确认清除").performClick()
         compose.onNodeWithContentDescription("返回").performClick()
         compose.onNodeWithText("继续").performClick()
@@ -86,8 +96,12 @@ class HostKeyNavigationTest {
     @Test
     fun `终端弹窗跳转同一配置页返回仍可重新连接`() {
         val vm = mockk<TerminalViewModel>(relaxed = true)
-        val state = MutableStateFlow(TerminalUiState(connState = ConnState.ERROR,
-            hostKeyChanged = HostKeyChangedException("host:22", "旧指纹", "新指纹", "rsa", byteArrayOf())))
+        val state = MutableStateFlow(
+            TerminalUiState(
+                connState = ConnState.ERROR,
+                hostKeyChanged = HostKeyChangedException("host:22", "旧指纹", "新指纹", "rsa", byteArrayOf())
+            )
+        )
         every { vm.ui } returns state
         every { vm.commands } returns MutableStateFlow(emptyList())
         every { vm.copyRequest } returns MutableStateFlow(null)
@@ -110,7 +124,9 @@ class HostKeyNavigationTest {
             }
         }
         compose.onNodeWithText("前往设置清除").performClick()
-        compose.onNodeWithText("清除服务器指纹").assertExists()
+        compose.onNode(hasScrollToNodeAction())
+            .performScrollToNode(hasTestTag("settings_group_credentials"))
+        compose.onNode(hasText("清除服务器指纹", substring = true)).assertExists()
         compose.runOnIdle { assertEquals(Routes.CONFIG, nav.currentDestination?.route) }
         compose.onNodeWithContentDescription("返回").performClick()
         compose.onNodeWithContentDescription("重新连接").performClick()

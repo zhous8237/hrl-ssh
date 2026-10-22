@@ -51,6 +51,11 @@ import com.assh.ui.commands.CommandsScreen
 import com.assh.ui.theme.BlueAccent
 import com.assh.ui.theme.GreenSuccess
 import com.assh.ui.theme.Navy800
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.ui.unit.dp
+import com.assh.ui.common.SettingsDivider
+import com.assh.ui.common.SettingsGroup
+import com.assh.ui.common.SettingsRow
 import com.assh.ui.theme.Navy900
 import com.assh.ui.theme.Slate400
 
@@ -128,130 +133,88 @@ fun ConfigScreen(onBack: (() -> Unit)? = null, vm: ConfigViewModel = viewModel(f
             ) { padding ->
                 LazyColumn(
                     modifier = Modifier.fillMaxSize().padding(padding),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(20.dp)
                 ) {
+                    // 外观
                     item {
-                        ConfigEntry(
-                            icon = Icons.Default.Fingerprint,
-                            iconTint = BlueAccent,
-                            title = "清除服务器指纹",
-                            subtitle = clearState.message?.takeUnless { clearState.confirming }
-                                ?: "指纹不匹配时清除，下次连接重新记录",
-                            enabled = !clearState.busy,
-                            onClick = vm::requestClear
-                        )
+                        SettingsGroup(title = "外观") {
+                            SettingsRow(
+                                icon = Icons.Default.Palette,
+                                iconTint = BlueAccent,
+                                title = "主题",
+                                subtitle = "白天 / 夜晚 / 跟随系统",
+                                onClick = { page = ConfigPage.THEME }
+                            )
+                        }
                     }
+
+                    // 运行
                     item {
-                        ConfigEntry(
-                            icon = Icons.Default.BatteryChargingFull,
-                            iconTint = GreenSuccess,
-                            title = "后台运行",
-                            subtitle = "锁屏任务、通知与电池优化设置",
-                            enabled = true,
-                            onClick = { page = ConfigPage.BACKGROUND }
-                        )
+                        SettingsGroup(title = "运行") {
+                            SettingsRow(
+                                icon = Icons.Default.BatteryChargingFull,
+                                iconTint = GreenSuccess,
+                                title = "后台运行",
+                                subtitle = "锁屏任务、通知与电池优化设置",
+                                onClick = { page = ConfigPage.BACKGROUND }
+                            )
+                            SettingsDivider()
+                            SettingsRow(
+                                icon = Icons.Default.NetworkCheck,
+                                iconTint = BlueAccent,
+                                title = "网络检测",
+                                subtitle = "检测当前网络的 IPv4 / IPv6 可用性",
+                                onClick = { page = ConfigPage.NETWORK }
+                            )
+                        }
                     }
+
+                    // 数据
                     item {
-                        ConfigEntry(
-                            icon = Icons.Default.Palette,
-                            iconTint = BlueAccent,
-                            title = "主题",
-                            subtitle = "白天 / 夜晚 / 跟随系统",
-                            enabled = true,
-                            onClick = { page = ConfigPage.THEME }
-                        )
+                        SettingsGroup(title = "数据") {
+                            SettingsRow(
+                                icon = Icons.Default.Terminal,
+                                iconTint = BlueAccent,
+                                title = "自定义命令",
+                                subtitle = "管理终端快捷命令",
+                                onClick = { page = ConfigPage.COMMANDS }
+                            )
+                            SettingsDivider()
+                            SettingsRow(
+                                icon = Icons.Default.CloudSync,
+                                iconTint = GreenSuccess,
+                                title = "WebDAV 同步",
+                                subtitle = "云端备份与多设备同步",
+                                onClick = { page = ConfigPage.SYNC }
+                            )
+                        }
                     }
+
+                    // 凭据与安全
                     item {
-                        ConfigEntry(
-                            icon = Icons.Default.Terminal,
-                            iconTint = BlueAccent,
-                            title = "自定义命令",
-                            subtitle = "管理终端快捷命令",
-                            enabled = true,
-                            onClick = { page = ConfigPage.COMMANDS }
-                        )
-                    }
-                    item {
-                        ConfigEntry(
-                            icon = Icons.Default.NetworkCheck,
-                            iconTint = BlueAccent,
-                            title = "网络检测",
-                            subtitle = "检测当前网络的 IPv4 / IPv6 可用性",
-                            enabled = true,
-                            onClick = { page = ConfigPage.NETWORK }
-                        )
-                    }
-                    item {
-                        ConfigEntry(
-                            icon = Icons.Default.CloudSync,
-                            iconTint = GreenSuccess,
-                            title = "WebDAV 同步",
-                            subtitle = "云端备份与多设备同步",
-                            enabled = true,
-                            onClick = { page = ConfigPage.SYNC }
-                        )
-                    }
-                    item {
-                        ConfigEntry(
-                            icon = Icons.Default.Password,
-                            iconTint = BlueAccent,
-                            title = "密码（私钥）配置",
-                            subtitle = "管理 SSH 私钥与密码凭据",
-                            enabled = true,
-                            onClick = { page = ConfigPage.KEYS }
-                        )
+                        SettingsGroup(title = "凭据与安全", tag = "settings_group_credentials") {
+                            SettingsRow(
+                                icon = Icons.Default.Password,
+                                iconTint = BlueAccent,
+                                title = "密码（私钥）配置",
+                                subtitle = "管理 SSH 私钥与密码凭据",
+                                onClick = { page = ConfigPage.KEYS }
+                            )
+                            SettingsDivider()
+                            SettingsRow(
+                                icon = Icons.Default.Fingerprint,
+                                iconTint = BlueAccent,
+                                title = "清除服务器指纹",
+                                subtitle = clearState.message?.takeUnless { clearState.confirming }
+                                    ?: "指纹不匹配时清除，下次连接重新记录",
+                                enabled = !clearState.busy,
+                                showChevron = false,
+                                onClick = vm::requestClear
+                            )
+                        }
                     }
                 }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ConfigEntry(
-    icon: ImageVector,
-    iconTint: androidx.compose.ui.graphics.Color,
-    title: String,
-    subtitle: String,
-    enabled: Boolean,
-    onClick: () -> Unit
-) {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = Navy800),
-        shape = RoundedCornerShape(16.dp),
-        modifier = Modifier
-            .fillMaxWidth()
-            .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier)
-    ) {
-        Row(
-            Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                icon, null,
-                tint = if (enabled) iconTint else iconTint.copy(alpha = 0.4f),
-                modifier = Modifier.size(28.dp)
-            )
-            Spacer(Modifier.width(14.dp))
-            Column(Modifier.weight(1f)) {
-                Text(
-                    title,
-                    fontWeight = FontWeight.SemiBold,
-                    color = if (enabled) MaterialTheme.colorScheme.onBackground
-                    else Slate400
-                )
-                Text(
-                    subtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Slate400
-                )
-            }
-            if (enabled) {
-                Icon(
-                    Icons.AutoMirrored.Filled.KeyboardArrowRight, null,
-                    tint = Slate400
-                )
             }
         }
     }

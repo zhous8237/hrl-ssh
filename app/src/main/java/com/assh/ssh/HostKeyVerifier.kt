@@ -25,7 +25,11 @@ fun Throwable.hostKeyChange(): HostKeyChangedException? =
 /**
  * TOFU 信任模型（文档 §7.3）：
  * - 首次连接：记录指纹到 known_hosts 表，信任。
- * - 再次连接：比对指纹；不一致抛 HostKeyChangedException，绝不静默接受。
+ * - 再次连接：与**该主机已信任的全部指纹**逐一比对，命中任一即放行。
+ *
+ * 为什么允许多条：域名后面可能挂多台机器（负载均衡），各自主机密钥不同；
+ * 服务器轮换密钥时新旧也可能并存。只认一条会导致“每次连到不同后端都弹窗”。
+ * 安全边界不变：出现**陌生**密钥仍然抛异常交给用户决策。
  */
 class AsshHostKeyVerifier(private val dao: KnownHostDao) : HostKeyVerifier {
 
@@ -35,24 +39,17 @@ class AsshHostKeyVerifier(private val dao: KnownHostDao) : HostKeyVerifier {
         val keyType = KeyType.fromKey(key).toString()
         val keyBlob = key.encoded ?: ByteArray(0)
 
-        val saved = dao.findBlocking(hostPort)
+        val saved = dao.findAllBlocking(hostPort)
         return when {
-            saved == null -> {
+            saved.isEmpty() -> {
                 // TOFU 首次信任
-                dao.insertBlocking(
-                    KnownHostEntity(
-                        hostPort = hostPort,
-                        keyType = keyType,
-                        fingerprintSha256 = fingerprint,
-                        publicKeyBlob = keyBlob
-                    )
-                )
+                remember(hostPort, keyType, fingerprint, keyBlob)
                 true
             }
-            saved.fingerprintSha256 == fingerprint -> true
+            saved.any { it.fingerprintSha256 == fingerprint } -> true
             else -> throw HostKeyChangedException(
                 hostPort = hostPort,
-                savedFingerprint = saved.fingerprintSha256,
+                savedFingerprint = saved.joinToString("、") { it.fingerprintSha256 },
                 actualFingerprint = fingerprint,
                 actualKeyType = keyType,
                 actualKeyBlob = keyBlob
@@ -60,8 +57,27 @@ class AsshHostKeyVerifier(private val dao: KnownHostDao) : HostKeyVerifier {
         }
     }
 
+    /**
+     * 记录一把新密钥。
+     *
+     * 用户确认“信任新指纹”时会走这里：**不删除**旧指纹，改为追加，
+     * 这样同一主机在多个后端之间轮转时不会互相顶掉。
+     */
+    fun remember(hostPort: String, keyType: String, fingerprint: String, keyBlob: ByteArray) {
+        dao.insertBlocking(
+            KnownHostEntity(
+                id = KnownHostEntity.makeId(hostPort, fingerprint),
+                hostPort = hostPort,
+                keyType = keyType,
+                fingerprintSha256 = fingerprint,
+                publicKeyBlob = keyBlob
+            )
+        )
+    }
+
     override fun findExistingAlgorithms(hostname: String, port: Int): List<String> {
-        val saved = dao.findBlocking("$hostname:$port") ?: return emptyList()
-        return listOf(saved.keyType)
+        val saved = dao.findAllBlocking("$hostname:$port")
+        // 已记录的所有 keyType 都视为“已知算法”，避免重复试探
+        return saved.map { it.keyType }.distinct()
     }
 }
