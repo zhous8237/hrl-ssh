@@ -156,6 +156,53 @@ class SshConfigImportPlannerTest {
     }
 
     @Test
+    fun `无密钥且开启无认证时按 NONE 导入`() {
+        // instabox 这类：配置里没有 IdentityFile，用户名本身就是凭据
+        val plan = SshConfigImportPlanner.plan(
+            parsed = listOf(parsed("instabox-cli", user = "ibssh_abc"))
+        )
+        val draft = plan.hosts.single()
+        assertNull(draft.keyAlias)
+        val entity = SshConfigImportPlanner.toHostEntity(
+            draft, keyId = null, noneAuthWhenNoKey = true
+        )
+        assertEquals(AuthType.NONE, entity.authType)
+        assertNull(entity.keyId)
+        assertEquals("instabox-cli", entity.label)
+        assertEquals("ibssh_abc", entity.username)
+    }
+
+    @Test
+    fun `未开启无认证时无密钥条目仍按密码导入`() {
+        val plan = SshConfigImportPlanner.plan(parsed = listOf(parsed("plain")))
+        val entity = SshConfigImportPlanner.toHostEntity(
+            plan.hosts.single(), keyId = null, noneAuthWhenNoKey = false
+        )
+        assertEquals(AuthType.PASSWORD, entity.authType)
+    }
+
+    @Test
+    fun `已绑定私钥时无认证开关不生效`() {
+        val plan = SshConfigImportPlanner.plan(
+            parsed = listOf(parsed("withkey", identity = "/k/id_rsa")),
+            identityFileContents = mapOf("id_rsa" to rsaPem)
+        )
+        val entity = SshConfigImportPlanner.toHostEntity(
+            plan.hosts.single(), keyId = 7L, noneAuthWhenNoKey = true
+        )
+        // 有私钥优先用 KEY，不能被 none 覆盖
+        assertEquals(AuthType.KEY, entity.authType)
+    }
+
+    @Test
+    fun `AuthType 依次含 PASSWORD KEY NONE`() {
+        assertEquals(
+            listOf(AuthType.PASSWORD, AuthType.KEY, AuthType.NONE),
+            AuthType.values().toList()
+        )
+    }
+
+    @Test
     fun `空解析结果产生空计划`() {
         val plan = SshConfigImportPlanner.plan(emptyList())
         assertEquals(0, plan.importableCount)

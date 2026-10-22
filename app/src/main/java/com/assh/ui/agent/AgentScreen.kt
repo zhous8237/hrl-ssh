@@ -331,7 +331,8 @@ private fun HostDropdown(
 ) {
     var expanded by remember { mutableStateOf(false) }
     val selected = hosts.firstOrNull { it.id == selectedHostId }
-    val label = selected?.let { "${it.label}（${it.username}@${it.host}:${it.port}）" }
+    // 目标主机只显示名称：括号里的 user@host:port 会让控件过长且与「目标」无关
+    val label = selected?.label
         ?: if (hosts.isEmpty()) "无可用主机，请先在主机页添加" else "请选择主机"
     ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { if (enabled) expanded = !expanded }) {
         OutlinedTextField(
@@ -344,7 +345,7 @@ private fun HostDropdown(
         ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             hosts.forEach { h ->
                 DropdownMenuItem(
-                    text = { Text("${h.label}（${h.username}@${h.host}:${h.port}）") },
+                    text = { Text(h.label) },
                     onClick = { onSelect(h.id); expanded = false }
                 )
             }

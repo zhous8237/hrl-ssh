@@ -29,6 +29,7 @@ import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
@@ -124,7 +125,7 @@ fun HostEditScreen(
                     SegmentedButton(
                         selected = state.authType == AuthType.PASSWORD,
                         onClick = { vm.update { copy(authType = AuthType.PASSWORD) } },
-                        shape = SegmentedButtonDefaults.itemShape(0, 2),
+                        shape = SegmentedButtonDefaults.itemShape(0, 3),
                         icon = { Icon(Icons.Default.Password, null) },
                         colors = SegmentedButtonDefaults.colors(
                             activeContainerColor = BlueAccent.copy(alpha = 0.25f),
@@ -134,13 +135,32 @@ fun HostEditScreen(
                     SegmentedButton(
                         selected = state.authType == AuthType.KEY,
                         onClick = { vm.update { copy(authType = AuthType.KEY) } },
-                        shape = SegmentedButtonDefaults.itemShape(1, 2),
+                        shape = SegmentedButtonDefaults.itemShape(1, 3),
                         icon = { Icon(Icons.Default.Key, null) },
                         colors = SegmentedButtonDefaults.colors(
                             activeContainerColor = BlueAccent.copy(alpha = 0.25f),
                             activeContentColor = BlueAccent
                         )
                     ) { Text("私钥") }
+                    SegmentedButton(
+                        selected = state.authType == AuthType.NONE,
+                        onClick = { vm.update { copy(authType = AuthType.NONE) } },
+                        shape = SegmentedButtonDefaults.itemShape(2, 3),
+                        icon = { Icon(Icons.Default.Person, null) },
+                        colors = SegmentedButtonDefaults.colors(
+                            activeContainerColor = BlueAccent.copy(alpha = 0.25f),
+                            activeContentColor = BlueAccent
+                        )
+                    ) { Text("无认证") }
+                }
+
+                if (state.authType == AuthType.NONE) {
+                    Text(
+                        "只上报用户名，不发送密码或密钥。适用于用户名本身就是凭据的服务" +
+                            "（如 instabox：iban-xxx@ssh.example.com）。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Slate400
+                    )
                 }
 
                 if (state.authType == AuthType.PASSWORD) {

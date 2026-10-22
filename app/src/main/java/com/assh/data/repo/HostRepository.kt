@@ -84,6 +84,9 @@ class HostRepository(private val db: AsshDatabase) {
                     ?: throw IllegalStateException("私钥不存在: $keyId")
                 privateKeyPem = SealedSecret(key.encPrivateKey).decryptToString()
             }
+            AuthType.NONE -> {
+                // 用户名即凭据：不解析密码/私钥，明文凭据为 null
+            }
         }
 
         return ResolvedHostConfig(

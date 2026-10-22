@@ -34,9 +34,12 @@ data class HostEditState(
     val valid: Boolean
         get() = label.isNotBlank() && host.isNotBlank() && username.isNotBlank() &&
             (port.toIntOrNull() in 1..65535) &&
-            (authType == AuthType.PASSWORD || keyId != null)
+            when (authType) {
+                AuthType.PASSWORD -> true          // 密码可在连接时再输
+                AuthType.KEY -> keyId != null
+                AuthType.NONE -> true              // 用户名即凭据，无需密钥
+            }
 }
-
 /**
  * 主机地址标准化（功能 3）：支持域名 / IPv4 / IPv6。
  * IPv6 无需用户输入 []，粘贴带 [] 的（如 "[::1]"）也自动剥离；统一裸地址存储。
