@@ -9,6 +9,7 @@ import androidx.navigation.navArgument
 import com.assh.ui.config.ConfigScreen
 import com.assh.ui.home.HomeScreen
 import com.assh.ui.hosts.HostEditScreen
+import com.assh.ui.hosts.SshConfigImportScreen
 import com.assh.ui.terminal.TerminalScreen
 
 object Routes {
@@ -16,6 +17,7 @@ object Routes {
     const val CONFIG = "config"
     const val HOST_EDIT = "host_edit?hostId={hostId}"
     const val TERMINAL = "terminal/{hostId}"
+    const val SSH_CONFIG_IMPORT = "ssh_config_import"
 
     fun hostEdit(hostId: Long? = null) =
         if (hostId == null) "host_edit?hostId=-1" else "host_edit?hostId=$hostId"
@@ -33,7 +35,10 @@ fun AsshNavGraph() {
                 onOpenTerminal = { nav.navigate(Routes.terminal(it)) },
                 onEditHost = { nav.navigate(Routes.hostEdit(it)) },
                 onAddHost = { nav.navigate(Routes.hostEdit()) },
-                onOpenConfig = { nav.navigate(Routes.CONFIG) { launchSingleTop = true } }
+                onOpenConfig = { nav.navigate(Routes.CONFIG) { launchSingleTop = true } },
+                onImportSshConfig = {
+                    nav.navigate(Routes.SSH_CONFIG_IMPORT) { launchSingleTop = true }
+                }
             )
         }
         composable(
@@ -56,6 +61,9 @@ fun AsshNavGraph() {
         }
         composable(Routes.CONFIG) {
             ConfigScreen(onBack = { nav.popBackStack() })
+        }
+        composable(Routes.SSH_CONFIG_IMPORT) {
+            SshConfigImportScreen(onBack = { nav.popBackStack() })
         }
     }
 }

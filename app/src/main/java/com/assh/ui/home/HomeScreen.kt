@@ -44,7 +44,8 @@ fun HomeScreen(
     onOpenTerminal: (Long) -> Unit,
     onEditHost: (Long) -> Unit,
     onAddHost: () -> Unit,
-    onOpenConfig: () -> Unit
+    onOpenConfig: () -> Unit,
+    onImportSshConfig: () -> Unit = {}
 ) {
     var selected by rememberSaveable { mutableIntStateOf(0) }
 
@@ -75,7 +76,8 @@ fun HomeScreen(
                 HomeTab.HOSTS -> HostsScreen(
                     onOpenTerminal = onOpenTerminal,
                     onEditHost = onEditHost,
-                    onAddHost = onAddHost
+                    onAddHost = onAddHost,
+                    onImportSshConfig = onImportSshConfig
                 )
                 HomeTab.AGENT -> AgentTab(onOpenConfig = onOpenConfig)
                 HomeTab.CONFIG -> ConfigScreen()

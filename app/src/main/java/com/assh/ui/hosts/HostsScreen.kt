@@ -24,6 +24,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
@@ -31,6 +32,9 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -64,6 +68,7 @@ import com.assh.ui.common.TopBarAddButton
 import com.assh.ui.theme.AvatarGradients
 import com.assh.ui.theme.BlueAccent
 import com.assh.ui.theme.GreenSuccess
+import com.assh.ui.theme.Navy700
 import com.assh.ui.theme.Navy800
 import com.assh.ui.theme.Navy900
 import com.assh.ui.theme.RedError
@@ -81,6 +86,7 @@ fun HostsScreen(
     onOpenTerminal: (Long) -> Unit,
     onEditHost: (Long) -> Unit,
     onAddHost: () -> Unit,
+    onImportSshConfig: () -> Unit = {},
     vm: HostsViewModel = viewModel()
 ) {
     val hosts by vm.hosts.collectAsState()
@@ -94,6 +100,13 @@ fun HostsScreen(
             TopAppBar(
                 title = { Text("hrl-ssh", fontWeight = FontWeight.Bold) },
                 actions = {
+                    IconButton(onClick = onImportSshConfig) {
+                        Icon(
+                            Icons.Default.FileUpload,
+                            contentDescription = "从 SSH 配置导入",
+                            tint = Slate400
+                        )
+                    }
                     TopBarAddButton(onClick = onAddHost, contentDescription = "新建服务器")
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -112,6 +125,13 @@ fun HostsScreen(
                     Text("还没有服务器", color = Slate400, style = MaterialTheme.typography.bodyLarge)
                     Spacer(Modifier.height(8.dp))
                     Text("点击右上角 + 添加第一台", color = Slate400.copy(alpha = 0.6f))
+                    Spacer(Modifier.height(16.dp))
+                    Button(
+                        onClick = onImportSshConfig,
+                        colors = ButtonDefaults.buttonColors(containerColor = Navy700)
+                    ) {
+                        Text("从 SSH config 批量导入")
+                    }
                 }
             }
         } else {
