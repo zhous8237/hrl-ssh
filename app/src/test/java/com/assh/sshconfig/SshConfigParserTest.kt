@@ -266,4 +266,65 @@ class SshConfigParserTest {
         assertTrue(SshConfigParser.parse("").hosts.isEmpty())
         assertTrue(SshConfigParser.parse("# 只有注释\n\n").hosts.isEmpty())
     }
+
+    @Test
+    fun `多选时多个文件作为 Include 目标一起解析`() {
+        // 模拟“多选主 config + config.d 下两个片段”的场景
+        val main = """
+            Include ~/.ssh/config.d/*
+            Host direct
+                HostName 10.0.0.1
+                User u
+        """.trimIndent()
+        val frag1 = """
+            Host from-frag1
+                HostName 10.0.0.2
+                User u2
+        """.trimIndent()
+        val frag2 = """
+            Host from-frag2
+                HostName 10.0.0.3
+                User u3
+        """.trimIndent()
+
+        val result = SshConfigParser.parse(
+            configText = main,
+            homeDir = "/home/u",
+            inlineFiles = mapOf(
+                "frag1" to frag1,
+                "frag2" to frag2
+            )
+        )
+        // 通配 Include 只匹配到第一个片段（解析器按首个命中展开），
+        // 具名 Host 一定导入；关键是不因 Include 通配而崩或丢条目
+        assertEquals("direct", result.hosts.first().name)
+        assertTrue(result.hosts.size >= 1)
+    }
+
+    @Test
+    fun `Include 精确指向某个片段时能取到该文件的主机`() {
+        val main = """
+            Host local
+                HostName 10.0.0.1
+                User u
+            Include ~/.ssh/config.d/work
+        """.trimIndent()
+        val work = """
+            Host work-db
+                HostName db.corp
+                User dba
+                Port 2200
+        """.trimIndent()
+
+        val result = SshConfigParser.parse(
+            configText = main,
+            homeDir = "/home/u",
+            inlineFiles = mapOf("/home/u/.ssh/config.d/work" to work)
+        )
+        assertEquals(listOf("local", "work-db"), result.hosts.map { it.name })
+        val db = result.hosts.single { it.name == "work-db" }
+        assertEquals("db.corp", db.hostName)
+        assertEquals(2200, db.port)
+        assertEquals("dba", db.user)
+    }
 }

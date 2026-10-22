@@ -78,8 +78,8 @@ fun SshConfigImportScreen(
     var userInput by remember { mutableStateOf("") }
 
     val configPicker = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri -> uri?.let(vm::loadConfig) }
+        ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris -> vm.loadConfigs(uris) }
 
     val keyPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments()
@@ -118,12 +118,27 @@ fun SshConfigImportScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.Description, null, tint = BlueAccent, modifier = Modifier.size(20.dp))
                         Spacer(Modifier.size(8.dp))
-                        Text("1. 选择 config 文件", fontWeight = FontWeight.SemiBold)
+                        Text("1. 选择 config 文件（可多选）", fontWeight = FontWeight.SemiBold)
                     }
                     Text(
                         state.fileName ?: "未选择（PC 上通常是 %USERPROFILE%\\.ssh\\config）",
                         style = MaterialTheme.typography.bodySmall,
                         color = if (state.fileName == null) Slate400 else GreenSuccess
+                    )
+                    if (state.extraFiles.isNotEmpty()) {
+                        // 多选时其余文件作为 Include 目标一并读取
+                        Text(
+                            "已附带 ${state.extraFiles.size} 个文件（供 Include 使用）：" +
+                                state.extraFiles.joinToString("、"),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Slate400
+                        )
+                    }
+                    Text(
+                        "可一次选中主 config 与 config.d/ 下的片段文件；" +
+                            "含 Host 的文件作主配置，其余按 Include 目标匹配。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Slate400
                     )
                     Button(
                         onClick = { configPicker.launch(arrayOf("*/*")) },

@@ -31,11 +31,15 @@ class SshConfigImportViewModel(app: Application) : AndroidViewModel(app) {
     data class State(
         val busy: Boolean = false,
         val fileName: String? = null,
+        /** 一并选中、供 Include 使用的附加配置文件（展示名列表） */
+        val extraFiles: List<String> = emptyList(),
         val plan: SshConfigImportPlanner.Plan? = null,
         val warnings: List<String> = emptyList(),
         val defaultUsername: String = "",
         /** 已随配置一起提供的私钥：展示名 → 内容（明文只在本状态里，落库后丢弃） */
         val identities: Map<String, String> = emptyMap(),
+        /** Include 用的附加配置文件：展示名 → 全文（与 identities 分开，避免误判为私钥） */
+        val includeFiles: Map<String, String> = emptyMap(),
         /** 没有绑定私钥的条目是否按 none 认证（用户名即凭据）导入 */
         val noneAuthWhenNoKey: Boolean = false,
         val error: String? = null,
@@ -50,6 +54,8 @@ class SshConfigImportViewModel(app: Application) : AndroidViewModel(app) {
     val state: StateFlow<State> = _state.asStateFlow()
 
     private var configText: String = ""
+    /** Include 目标：展示名 → 全文（可由多选一并读入） */
+    private var includeTexts: Map<String, String> = emptyMap()
 
     fun update(action: State.() -> State) {
         _state.value = _state.value.action()
@@ -65,23 +71,59 @@ class SshConfigImportViewModel(app: Application) : AndroidViewModel(app) {
     fun clearDone() = update { copy(doneMessage = null) }
 
     /** 读取配置文件并解析出预览计划 */
-    fun loadConfig(uri: Uri) {
+    /**
+     * 读取配置文件（支持多选）。
+     *
+     * 多选语义：含 `Host` 行的文件视为主配置，其余作为 Include 目标一并用上；
+     * 若选中多个都含 `Host` 的文件，则按选择顺序全部作为主配置（后面文件的 Host 照样导入）。
+     * 私钥文件请用 [addIdentityFile] 选择，避免被当作配置文本解析。
+     */
+    fun loadConfigs(uris: List<Uri>) {
+        if (uris.isEmpty()) return
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true, error = null)
             try {
-                val (name, text) = withContext(Dispatchers.IO) { readUri(uri) }
-                if (text.isBlank()) {
-                    _state.value = _state.value.copy(busy = false, error = "文件为空：$name")
+                val read = withContext(Dispatchers.IO) {
+                    uris.mapNotNull { u ->
+                        runCatching { readUri(u) }.getOrNull()
+                    }
+                }
+                if (read.isEmpty()) {
+                    _state.value = _state.value.copy(busy = false, error = "读取失败：没有可用文件")
                     return@launch
                 }
-                configText = text
-                _state.value = _state.value.copy(busy = false, fileName = name, plan = null)
+
+                // 用“是否含 Host/Match 行”区分主配置与 Include 片段
+                val mains = read.filter { (_, text) -> hasHostSection(text) }
+                val fragments = read.filterNot { (_, text) -> hasHostSection(text) }
+
+                val mainList = mains.ifEmpty { read.take(1) }
+                val mainText = mainList.joinToString("\n") { it.second }
+
+                configText = mainText
+                includeTexts = fragments.associate { it.first to it.second }
+                _state.value = _state.value.copy(
+                    busy = false,
+                    fileName = mainList.first().first,
+                    extraFiles = fragments.map { it.first } + mainList.drop(1).map { it.first },
+                    includeFiles = includeTexts,
+                    plan = null
+                )
                 replan()
             } catch (e: Exception) {
                 _state.value = _state.value.copy(busy = false, error = "读取失败：${e.message}")
             }
         }
     }
+
+    /** 一个 config 片段里是否真的定义了主机（用于区分主配置与纯 Include 片段） */
+    private fun hasHostSection(text: String): Boolean =
+        text.lineSequence().any { line ->
+            val t = line.trim()
+            t.startsWith("Host ", ignoreCase = true) || t.startsWith("Host=", ignoreCase = true) ||
+                t.equals("Host", ignoreCase = true) ||
+                t.startsWith("Match ", ignoreCase = true) || t.equals("Match", ignoreCase = true)
+        }
 
     /** 追加一个私钥文件（配置里只写了路径，内容需要用户单独给） */
     fun addIdentityFile(uris: List<Uri>) {
@@ -125,7 +167,8 @@ class SshConfigImportViewModel(app: Application) : AndroidViewModel(app) {
                 SshConfigParser.parse(
                     configText = configText,
                     homeDir = null,
-                    inlineFiles = emptyMap(),
+                    // 多选来的其余文件交给 Include 解析：路径按文件名尾段匹配
+                    inlineFiles = includeTexts,
                     sourceName = s.fileName ?: "config"
                 )
             }
