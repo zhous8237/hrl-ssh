@@ -3,9 +3,11 @@ package com.assh.ui.hosts
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -24,7 +26,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.FileUpload
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
@@ -32,7 +34,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Card
@@ -65,6 +67,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.assh.data.db.entity.HostEntity
 import com.assh.ssh.ConnState
 import com.assh.ui.common.TopBarAddButton
+import com.assh.ui.common.TopBarIconButton
 import com.assh.ui.theme.AvatarGradients
 import com.assh.ui.theme.BlueAccent
 import com.assh.ui.theme.GreenSuccess
@@ -100,14 +103,19 @@ fun HostsScreen(
             TopAppBar(
                 title = { Text("hrl-ssh", fontWeight = FontWeight.Bold) },
                 actions = {
-                    IconButton(onClick = onImportSshConfig) {
-                        Icon(
-                            Icons.Default.FileUpload,
+                    // 两个操作同尺寸（40dp）放在一个 Row 里，用 spacedBy 统一间距；
+                    // 间距 8dp + 右侧 12dp padding，与主按钮原来的视觉留白一致。
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TopBarIconButton(
+                            onClick = onImportSshConfig,
                             contentDescription = "从 SSH 配置导入",
-                            tint = Slate400
+                            icon = Icons.Default.Description
                         )
+                        TopBarAddButton(onClick = onAddHost, contentDescription = "新建服务器")
                     }
-                    TopBarAddButton(onClick = onAddHost, contentDescription = "新建服务器")
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = Navy900,
@@ -123,14 +131,22 @@ fun HostsScreen(
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("还没有服务器", color = Slate400, style = MaterialTheme.typography.bodyLarge)
-                    Spacer(Modifier.height(8.dp))
-                    Text("点击右上角 + 添加第一台", color = Slate400.copy(alpha = 0.6f))
-                    Spacer(Modifier.height(16.dp))
-                    Button(
+                    Spacer(Modifier.height(6.dp))
+                    Text("点击右上角 + 添加，或直接导入现有配置", color = Slate400.copy(alpha = 0.6f))
+                    Spacer(Modifier.height(20.dp))
+                    OutlinedButton(
                         onClick = onImportSshConfig,
-                        colors = ButtonDefaults.buttonColors(containerColor = Navy700)
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = BlueAccent),
+                        border = BorderStroke(1.dp, Navy700),
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 10.dp)
                     ) {
-                        Text("从 SSH config 批量导入")
+                        Icon(
+                            Icons.Default.Description, null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("从 SSH config 导入")
                     }
                 }
             }

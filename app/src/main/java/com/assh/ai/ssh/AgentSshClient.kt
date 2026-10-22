@@ -11,6 +11,7 @@ import kotlinx.coroutines.withContext
 import net.schmizz.keepalive.KeepAliveProvider
 import net.schmizz.keepalive.KeepAliveRunner
 import net.schmizz.sshj.DefaultConfig
+import net.schmizz.sshj.userauth.method.AuthNone
 import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.connection.channel.direct.Session
 import java.io.IOException
@@ -71,6 +72,9 @@ class SshjAgentClientFactory(private val knownHostDao: KnownHostDao) : AgentSshC
                     c.authPassword(cfg.username, cfg.password ?: throw IllegalStateException("密码未提供"))
                 AuthType.KEY ->
                     c.authPublickey(cfg.username, c.loadKeys(cfg.privateKeyPem ?: throw IllegalStateException("私钥未提供"), null, null))
+                AuthType.NONE ->
+                    // 用户名即凭据：只发 none 请求（与 SshSession 的连线路径保持一致）
+                    c.auth(cfg.username, listOf(AuthNone()))
             }
             SshjAgentClient(c)
         } catch (e: Exception) {

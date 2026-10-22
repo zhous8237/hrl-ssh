@@ -14,6 +14,8 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
+import com.assh.ui.theme.Navy700
+import com.assh.ui.theme.Slate400
 import com.assh.ui.theme.BlueAccent
 
 /**
@@ -35,6 +37,30 @@ fun TopBarAddButton(
             .padding(end = 12.dp)
             .size(40.dp)
             .shadow(8.dp, CircleShape, spotColor = BlueAccent)
+    ) {
+        Icon(icon, contentDescription = contentDescription, modifier = Modifier.size(20.dp))
+    }
+}
+
+/**
+ * 标题栏「次要操作」圆按钮：与 [TopBarAddButton] 同尺寸（40dp / 圆形 / 图标 20dp），
+ * 但用低强调配色（Navy700 底 + 次要色图标），让主操作（蓝色 + 号）保持唯一视觉焦点。
+ *
+ * 间距由调用方用 `Row(horizontalArrangement = Arrangement.spacedBy(...))` 控制，
+ * 这里不再自带 margin，避免与主按钮的 padding 叠加导致不等距。
+ */
+@Composable
+fun TopBarIconButton(
+    onClick: () -> Unit,
+    contentDescription: String,
+    icon: ImageVector
+) {
+    FloatingActionButton(
+        onClick = onClick,
+        containerColor = Navy700,
+        contentColor = Slate400,
+        elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 0.dp),
+        modifier = Modifier.size(40.dp)
     ) {
         Icon(icon, contentDescription = contentDescription, modifier = Modifier.size(20.dp))
     }

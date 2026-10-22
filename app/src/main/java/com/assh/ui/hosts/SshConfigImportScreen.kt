@@ -24,6 +24,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -202,8 +203,13 @@ fun SshConfigImportScreen(
 
                         if (plan.keyMissing.isNotEmpty()) {
                             HorizontalDivider(color = Navy700, modifier = Modifier.padding(vertical = 6.dp))
-                            Text("需手动补私钥（已创建为主机，认证方式为密码，请稍后编辑）",
-                                style = MaterialTheme.typography.bodySmall, color = AmberWarning)
+                            Text(
+                                if (state.noneAuthWhenNoKey)
+                                    "未绑定私钥的条目将按「无认证」导入（只上报用户名）"
+                                else
+                                    "需手动补私钥（否则认证方式为密码，连接时会要求输入密码）",
+                                style = MaterialTheme.typography.bodySmall, color = AmberWarning
+                            )
                             plan.keyMissing.forEach { (name, reason) ->
                                 Text("• $name：$reason", style = MaterialTheme.typography.bodySmall,
                                     color = Slate400)
@@ -220,6 +226,32 @@ fun SshConfigImportScreen(
                             }
                         }
 
+
+                        // 没有 IdentityFile 的条目：询问是否按 none 认证（用户名即凭据）导入，
+                        // 典型场景是 instabox 这类「用户名本身就是令牌」的服务。
+                        if (plan.hosts.any { it.keyAlias == null }) {
+                            HorizontalDivider(color = Navy700, modifier = Modifier.padding(vertical = 6.dp))
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        "无密钥的主机按「无认证」导入",
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                    Text(
+                                        "只上报用户名，不发密码或密钥。适用于用户名本身就是凭据的服务。",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Slate400
+                                    )
+                                }
+                                Switch(
+                                    checked = state.noneAuthWhenNoKey,
+                                    onCheckedChange = vm::setNoneAuthWhenNoKey
+                                )
+                            }
+                        }
                         if (state.warnings.isNotEmpty()) {
                             HorizontalDivider(color = Navy700, modifier = Modifier.padding(vertical = 6.dp))
                             Text("解析提示（${state.warnings.size}）",

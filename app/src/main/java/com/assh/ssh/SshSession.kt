@@ -16,6 +16,7 @@ import net.schmizz.sshj.connection.channel.direct.Session
 import net.schmizz.sshj.transport.DisconnectListener
 import net.schmizz.sshj.userauth.keyprovider.KeyProvider
 import java.io.InputStream
+import net.schmizz.sshj.userauth.method.AuthNone
 import java.io.OutputStream
 
 enum class ConnState { IDLE, CONNECTING, CONNECTED, DISCONNECTED, ERROR }
@@ -119,6 +120,12 @@ class SshSession(
                         val pem = cfg.privateKeyPem
                             ?: throw IllegalStateException("私钥未提供")
                         c.authPublickey(cfg.username, loadKeyProvider(c, pem))
+                    }
+                    AuthType.NONE -> {
+                        // 用户名即凭据（如 instabox）：只发 none 请求，不发密码/公钥。
+                        // sshj 的 auth(user, Iterable<AuthMethod>) 走完整认证流程，
+                        // 含重试与异常包装，比直接调 UserAuth.authenticate 更稳。
+                        c.auth(cfg.username, listOf(AuthNone()))
                     }
                 }
                 flog("connect: auth ok, starting session")

@@ -4,7 +4,15 @@ import androidx.room.Entity
 import androidx.room.PrimaryKey
 import java.util.UUID
 
-enum class AuthType { PASSWORD, KEY }
+/**
+ * 认证方式。
+ * - [PASSWORD]：密码 / 密码库引用
+ * - [KEY]：私钥
+ * - [NONE]：**不发送任何凭据**，只报用户名（SSH 的 `none` 认证）。
+ *   适用于「用户名本身就是令牌」的服务（如 instabox 这类）：服务器在用户名里
+ *   解析出身份后直接放行，客户端不应再尝试密码或公钥。
+ */
+enum class AuthType { PASSWORD, KEY, NONE }
 
 /** 服务器连接配置（功能 1） */
 @Entity(tableName = "hosts")

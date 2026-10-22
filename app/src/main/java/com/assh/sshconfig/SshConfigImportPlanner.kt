@@ -128,14 +128,29 @@ object SshConfigImportPlanner {
         )
     }
 
-    /** 用计划生成可落库的实体（id = 0，时间戳取当前）。keyId 由调用方按别名回填。 */
-    fun toHostEntity(draft: HostDraft, keyId: Long?, sortOrder: Int = 0): HostEntity =
+    /**
+     * 用计划生成可落库的实体（id = 0，时间戳取当前）。keyId 由调用方按别名回填。
+     *
+     * @param noneAuthWhenNoKey 没有绑定私钥时是否按 `none` 认证（用户名即凭据）落库。
+     *        导入面板在「配置里没有 IdentityFile」时会询问用户并置 true，
+     *        避免像 instabox 这类服务被建成密码认证后在连接时报「密码未提供」。
+     */
+    fun toHostEntity(
+        draft: HostDraft,
+        keyId: Long?,
+        sortOrder: Int = 0,
+        noneAuthWhenNoKey: Boolean = false
+    ): HostEntity =
         HostEntity(
             label = draft.label,
             host = draft.host,
             port = draft.port,
             username = draft.username,
-            authType = if (keyId != null) AuthType.KEY else AuthType.PASSWORD,
+            authType = when {
+                keyId != null -> AuthType.KEY
+                noneAuthWhenNoKey -> AuthType.NONE
+                else -> AuthType.PASSWORD
+            },
             keyId = keyId,
             sortOrder = sortOrder
         )

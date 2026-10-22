@@ -36,9 +36,15 @@ class SshConfigImportViewModel(app: Application) : AndroidViewModel(app) {
         val defaultUsername: String = "",
         /** 已随配置一起提供的私钥：展示名 → 内容（明文只在本状态里，落库后丢弃） */
         val identities: Map<String, String> = emptyMap(),
+        /** 没有绑定私钥的条目是否按 none 认证（用户名即凭据）导入 */
+        val noneAuthWhenNoKey: Boolean = false,
         val error: String? = null,
         val doneMessage: String? = null
     )
+
+    fun setNoneAuthWhenNoKey(enabled: Boolean) {
+        _state.value = _state.value.copy(noneAuthWhenNoKey = enabled)
+    }
 
     private val _state = MutableStateFlow(State())
     val state: StateFlow<State> = _state.asStateFlow()
@@ -178,7 +184,12 @@ class SshConfigImportViewModel(app: Application) : AndroidViewModel(app) {
                     for (draft in plan.hosts) {
                         val keyId = draft.keyAlias?.let { aliasToId[it] }
                         hostRepo.save(
-                            SshConfigImportPlanner.toHostEntity(draft, keyId, sortOrder = order++),
+                            SshConfigImportPlanner.toHostEntity(
+                                draft,
+                                keyId,
+                                sortOrder = order++,
+                                noneAuthWhenNoKey = _state.value.noneAuthWhenNoKey
+                            ),
                             plainPassword = null
                         )
                         hostCount++
